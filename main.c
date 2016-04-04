@@ -1,14 +1,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "upng.h"
 #include <dirent.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <stdint.h>
- #define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
 struct img_dt {
@@ -277,32 +278,12 @@ void destroy_image_data (unsigned char **src, int y)
 
 int alloc_img_from_file (const char *fname, struct img_dt *ptr, int expect_size)
 {
-	upng_t *upng;
-	const unsigned char *buffer;
+	unsigned char *buffer;
 	int i;
 
-	if (!(upng = upng_new_from_file(fname)))
-		return -1;
+	buffer = stbi_load(fname, &ptr->x, &ptr->y, &ptr->pixsz, 0);
 	
-	upng_header(upng);
-	if (upng_get_error(upng) != UPNG_EOK)
-		return -1;
-	
-	ptr->pixsz = upng_get_pixelsize(upng) >> 3;
-	
-	if (expect_size && ptr->pixsz != expect_size) {
-		fprintf(stderr, "image %s has incorrect pixel size\n", fname);
-		upng_free(upng);
-		return -1;
-	}
-	
-	upng_decode(upng);
-	if (upng_get_error(upng) != UPNG_EOK)
-		return -1;
-	
-	ptr->y = upng_get_height(upng);
-	ptr->x = upng_get_width(upng) * ptr->pixsz;
-	buffer = upng_get_buffer(upng);
+	ptr->x *= ptr->pixsz;
 	
 	ptr->flat = malloc(ptr->y * ptr->x);
 	memcpy(ptr->flat, buffer, ptr->y * ptr->x);
@@ -311,12 +292,12 @@ int alloc_img_from_file (const char *fname, struct img_dt *ptr, int expect_size)
 	
 	for (i = 0; i < ptr->y; i++)
 		memcpy(ptr->img[i], &buffer[i * (ptr->x)], ptr->x);
-		
-	upng_free(upng);
 	
+    stbi_image_free(buffer);
+
 	fprintf(stderr, "alloc image %s (%d x %d) pixsz = %d\n", 
 		fname, ptr->x, ptr->y, ptr->pixsz);
-
+		
 	return 0;
 }
 
@@ -335,11 +316,11 @@ ssize_t file_copy (const char *dst_path, const char *src_path)
 	if (stat(dst_path, &st) < 0 || !S_ISDIR(st.st_mode))
 		return -1;
 
-	strncpy(wpath, dst_path, sizeof(wpath));
+	strncpy(wpath, dst_path, sizeof(wpath) - 1);
 	if ((filename = get_last(src_path, '/') + 1) == NULL)
 		return -1;
-	strncat(wpath, "/", sizeof(wpath));
-	strncat(wpath, filename, sizeof(wpath));
+	strncat(wpath, "/", sizeof(wpath) - 1);
+	strncat(wpath, filename, sizeof(wpath) - 1);
 	
 	fprintf(stderr, "[%s]: copying: \n\t\"%s\" to: \n\t\"%s\"\n", 
 		__func__, src_path, wpath);
@@ -415,90 +396,209 @@ int run (const char *src_path, const char *comp, const char *dst)
 	return 0;
 }
 
-int num_in_list (unsigned char *data, int num, int size_each, unsigned char *search)
+int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr, unsigned char *cmp_start)
 {
-	int count = 0;
-	
-	while (--num)
-		if (!memcmp(data + (num * size_each), search, size_each))
-			++count;
-	
-	return count;
-}
-
-int find_most_common_entry (unsigned char *data, int num, int size_each)
-{
+#if 1
 	int i;
 	
+	for (x1 *= pixsz; x1 < img_x; x1 += pixsz) {
+		for (i = 0; i < pixsz; i++)
+			if (cmp_ptr[i] != cmp_start[i]) 
+				break;
+		
+		if (i < pixsz)
+			break;
+		
+		cmp_ptr += pixsz;
+	}
+
+	return x1 /= pixsz;
+	#else
+	
+	x1 *= pixsz;
+	
+	asm volatile ("movq %%rax, %%r8\n"
+					"movq %%rbx, %%r9\n"
+					"movq %%rcx, %%r10\n"
+	
+			"fxb_loop1:\n" 
+				"cmpq %%r8, %%r10\n"
+				"jge fxb_endloop\n"
+		
+				"xorq %%rdx, %%rdx\n"
+		
+			"fxb_subloop:\n"
+				"movb (%%rdi, %%rdx), %%al\n"
+				"movb (%%rsi, %%rdx), %%bl\n"
+		
+				"cmpb %%al, %%bl\n"
+				"jne fxb_subend\n"
+		
+				"incq %%rdx\n"
+				"cmpq %%rdx, %%r9\n"
+				"jge fxb_subend\n"
+				"jmp fxb_subloop\n"
+			"fxb_subend:\n"
+
+				"cmpq %%rdx, %%r9\n"
+				"jl fxb_endloop\n"
+		
+				"addq %%r9, %%rdi\n"
+				"addq %%r9, %%r8\n"
+				"jmp fxb_loop1\n"
+			"fxb_endloop:\n"
+				"movq %%r8, %%rax\n"
+
+				: "=a" (x1)
+				: "a" (x1),
+					"b" (pixsz),
+					"c" (img_x),
+					"S" (cmp_start),
+					"D" (cmp_ptr)
+				: "rdx", "r8", "r9", "r10" );
+				
+	return x1 / pixsz;
+	#endif
+}
+
+int find_most_common (int x1, int y1, int pixsz, int img_y, unsigned char *column_buffer)
+{
+	int i, j;
 	int max = 0;
+	int tmp_pos = 0;
 	int max_pos = 0;
 	
-	int tmp_pos = 0;
+	int num = 0;
+	unsigned char *cmp_ptr;
+	unsigned char *cmp_start = column_buffer; 
 	
-	for (i = 0; i < num; i++) {
-		tmp_pos = num_in_list(data, num, size_each, data + (i * size_each));
+	for (i = 0; i < img_y - y1; i++) {
+		tmp_pos = 0;
+		num = img_y - y1;
+			
+		while (--num) {
+			cmp_ptr = column_buffer + (num * pixsz);
+			for (j = 0; j < pixsz; j++)
+				if (cmp_ptr[j] != cmp_start[j])
+					break;
+			
+			if (j == pixsz)
+				++tmp_pos;				
+		}
+	
 		if (tmp_pos >= max_pos) {
 			max = i;
 			max_pos = tmp_pos;
 		}
-				
+		
+		cmp_start += pixsz;
 	}
 	
 	return max;
 }
 
+int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x, int img_y, int y1, int pixsz)
+{
+	int temp = img_y;
+	
+	int i = 0;
+	
+	while (temp >= y1 && i != pixsz) {
+		cmp_ptr -= img_x;
+		--temp;
+
+		for (i = 0; i < pixsz; i++)
+			if (cmp_start[i] != cmp_ptr[i])
+				break;
+	}
+	
+	return (temp <= y1) ? (img_y - 1) : temp;
+}
+
+void build_col_buffer (int y1, int img_x, int img_y, int pixsz, unsigned char *column_ptr, unsigned char *cmp_ptr)
+{
+	int i; 
+	
+	#if 1
+	
+	for (; y1 < img_y; y1++) {
+		for (i = 0; i < pixsz; i++)
+			*column_ptr++ = cmp_ptr[i];
+
+		cmp_ptr += img_x;
+	}
+	
+	#else
+	int line_diff = img_x - pixsz;
+	asm volatile ("movq %%rbx, %%r8\n"
+				"movq %%rdx, %%r9\n"
+				"jmp bcb_check\n"
+	
+		"bcb_loop:\n"
+			
+			//"movq %%r9, %%rdx\n"
+			"xorq %%rdx, %%rdx\n"
+		"bcb_pixloop:\n"
+			"movb (%%rsi), %%bl\n"
+			"movb %%bl, (%%rdi)\n"
+			"incq %%rsi\n"
+			"incq %%rdi\n"
+			"incq %%rdx\n"
+		"bcb_pixcheck:\n"
+			"cmpq %%rdx, %%r9\n"
+			"jl bcb_pixloop\n"
+			
+			"addq %%r8, %%rsi\n"
+		
+		
+			"incq %%rax\n"
+		"bcb_check:\n"
+			"cmpq %%rax, %%rcx\n"
+			"jl bcb_loop\n"
+			
+		
+		
+					:: "a" (y1),
+						"b" (line_diff),
+						"c" (img_y),
+						"d" (pixsz),
+						"D" (column_ptr),
+						"S" (cmp_ptr): "r8", "r9");
+					
+	#endif
+}
+
+
 int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x, 
 	       int img_y, int pixsz, int tl_pos, unsigned char *flat)
 {
-	unsigned char *column_buffer, *column_ptr;
-	int x0, y0, x1, y1;
+	unsigned char *column_buffer;
+	int x0, y0, x1, y1, max = 0;
+	
+	if (!x1p || !y1p)
+		return -1;
 	
 	y1 = y0 = (tl_pos / img_x);
 	x1 = x0 = (topleft_x + (tl_pos % img_x)) / pixsz;
 
-	if (!x1p || !y1p)
-		return -1;
-	
-	while (x1 < (img_x / pixsz)) {
-		if (memcmp(flat + (y0 * img_x) + (x1 * pixsz), 
-			   flat + (y0 * img_x) + (x0 * pixsz), pixsz))
-			break;
-		
-		x1++;
-	}
-	
-	column_ptr = (column_buffer = calloc((img_y - y1 + 1), pixsz));
-
+	x1 = find_x_boundary(x1, pixsz, img_x, flat + (y0 * img_x) + (x1 * pixsz), 
+						flat + (y0 * img_x) + (x0 * pixsz));
 	x0 -= (topleft_x / pixsz);
 	
-	while (y1 < img_y) {
-		memcpy(column_ptr, flat + (img_x * y1) + (x0 * pixsz), pixsz);
-		column_ptr += pixsz;
-		
-		y1++;
-	}
-	
-	y1 = tl_pos / img_x;
-	
-	int index = find_most_common_entry(column_buffer, img_y - y1, pixsz);
+	column_buffer = calloc((img_y - y1 + 1), pixsz);
 
-	int temp = img_y;
+	build_col_buffer (y1, img_x, img_y, pixsz, column_buffer, 
+						flat + (img_x * y1) + (x0 * pixsz));
 	
-	while (--temp >= y1)
-		if (!memcmp(flat + (img_x * temp) + (x0 * pixsz), 
-			    column_buffer + (index * pixsz), pixsz))
-			break;
-	
-	if (temp <= y1) 
-		y1 = img_y - 1;
-	else
-		y1 = temp;
+	max = find_most_common(x1, (tl_pos / img_x), pixsz, img_y, column_buffer);
+
+	*y1p = find_last_mc(column_buffer + (max * pixsz), 
+						flat + (img_y * img_x) + (x0 * pixsz), 
+						img_x, img_y, (tl_pos / img_x), pixsz);
+	*x1p = x1;
 	
 	free(column_buffer);
 
-	*x1p = x1;
-	*y1p = y1;
-	
 	return 0;
 }
 
@@ -596,6 +696,7 @@ int run_crop (const char *src_path, const char *tl_path, const char *br_path)
 	
 	return 0;
 }
+//https://imgur.com/delete/jncymUpY0d73kqV
 
 int get_refs (const char *src_path, const char *ext, struct queue *queue)
 {
