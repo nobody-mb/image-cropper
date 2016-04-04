@@ -499,6 +499,7 @@ int find_most_common (int x1, int y1, int pixsz, int img_y, unsigned char *colum
 
 int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x, int img_y, int y1, int pixsz)
 {
+#if 1
 	int temp = img_y;
 	
 	int i = 0;
@@ -513,6 +514,49 @@ int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x, i
 	}
 	
 	return (temp <= y1) ? (img_y - 1) : temp;
+#else
+	int retn = img_y;
+
+	asm volatile ("movq %%rax, %%r8\n"		/* y1 */
+				"movq %%rbx, %%r9\n"		/* pixsz */
+				"movq %%rcx, %%r10\n"		/* img_x */
+				"movq %%rdx, %%r11\n"		/* img_y */
+				"movq %%rdx, %%r12\n"		/* temp */
+				"xorq %%rax, %%rax\n"		/* i */
+				
+			"flm_loop:\n"
+				"cmpq %%r12, %%r8\n"
+				"jl flm_exit\n"
+				"cmpq %%rax, %%r9\n"
+				"je flm_exit\n"
+				
+				"subq %%r10, %%rdi\n"
+				"decq %%r12\n"
+				
+				"xorq %%rax, %%rax\n"
+			"flm_subloop:\n"
+				"movb (%%rsi, %%rax), %%bl\n"
+				"movb (%%rdi, %%rax), %%cl\n"
+				"cmpb %%bl, %%cl\n"
+				"jne flm_loop\n"
+				
+			"flm_sub_check:\n"
+				"cmpq %%rax, %%r9\n"
+				"jl flm_subloop\n"
+
+			"flm_exit:\n"
+				"movq %%r12, %%rax\n"
+				
+			: "=a" (retn) : "a" (y1),
+				"b" (pixsz),
+				"c" (img_x),
+				"d" (img_y),
+				"S" (cmp_start),
+				"D" (cmp_ptr)
+			: "r8");
+			
+		return (retn <= y1) ? (img_y - 1) : retn;
+#endif
 }
 
 void build_col_buffer (int y1, int img_x, int img_y, int pixsz, unsigned char *column_ptr, unsigned char *cmp_ptr)
@@ -529,72 +573,56 @@ void build_col_buffer (int y1, int img_x, int img_y, int pixsz, unsigned char *c
 	}
 	
 	#else
-	int line_diff = img_x - pixsz;
 	asm volatile ("movq %%rbx, %%r8\n"
 				"movq %%rdx, %%r9\n"
 				"jmp bcb_check\n"
-	
 		"bcb_loop:\n"
-			
-			//"movq %%r9, %%rdx\n"
 			"xorq %%rdx, %%rdx\n"
+			"xorb %%bl, %%bl\n"
 		"bcb_pixloop:\n"
-			"movb (%%rsi), %%bl\n"
+			"movb (%%rsi, %%rdx), %%bl\n"
 			"movb %%bl, (%%rdi)\n"
-			"incq %%rsi\n"
 			"incq %%rdi\n"
 			"incq %%rdx\n"
 		"bcb_pixcheck:\n"
 			"cmpq %%rdx, %%r9\n"
 			"jl bcb_pixloop\n"
-			
 			"addq %%r8, %%rsi\n"
-		
-		
 			"incq %%rax\n"
 		"bcb_check:\n"
 			"cmpq %%rax, %%rcx\n"
-			"jl bcb_loop\n"
-			
-		
-		
-					:: "a" (y1),
-						"b" (line_diff),
-						"c" (img_y),
-						"d" (pixsz),
-						"D" (column_ptr),
-						"S" (cmp_ptr): "r8", "r9");
-					
+			"jle bcb_loop\n"
+					:: "a" (y1), "b" (img_x), "c" (img_y), "d" (pixsz), 
+					"D" (column_ptr), "S" (cmp_ptr): "r8", "r9");
 	#endif
 }
-
 
 int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x, 
 	       int img_y, int pixsz, int tl_pos, unsigned char *flat)
 {
 	unsigned char *column_buffer;
-	int x0, y0, x1, y1, max = 0;
+	int x0, y0, x1, max = 0;
 	
 	if (!x1p || !y1p)
 		return -1;
 	
-	y1 = y0 = (tl_pos / img_x);
-	x1 = x0 = (topleft_x + (tl_pos % img_x)) / pixsz;
+	y0 = (tl_pos / img_x);
+	x0 = (topleft_x + (tl_pos % img_x)) / pixsz;
 
-	x1 = find_x_boundary(x1, pixsz, img_x, flat + (y0 * img_x) + (x1 * pixsz), 
+	x1 = find_x_boundary(x0, pixsz, img_x, flat + (y0 * img_x) + (x0 * pixsz), 
 						flat + (y0 * img_x) + (x0 * pixsz));
 	x0 -= (topleft_x / pixsz);
 	
-	column_buffer = calloc((img_y - y1 + 1), pixsz);
+	column_buffer = calloc((img_y - y0 + 1), pixsz);
 
-	build_col_buffer (y1, img_x, img_y, pixsz, column_buffer, 
-						flat + (img_x * y1) + (x0 * pixsz));
+	build_col_buffer (y0, img_x, img_y, pixsz, column_buffer, 
+						flat + (img_x * y0) + (x0 * pixsz));
 	
-	max = find_most_common(x1, (tl_pos / img_x), pixsz, img_y, column_buffer);
+	max = find_most_common(x1, y0, pixsz, img_y, column_buffer);
 
 	*y1p = find_last_mc(column_buffer + (max * pixsz), 
 						flat + (img_y * img_x) + (x0 * pixsz), 
-						img_x, img_y, (tl_pos / img_x), pixsz);
+						img_x, img_y, y0, pixsz);
 	*x1p = x1;
 	
 	free(column_buffer);
@@ -696,7 +724,6 @@ int run_crop (const char *src_path, const char *tl_path, const char *br_path)
 	
 	return 0;
 }
-//https://imgur.com/delete/jncymUpY0d73kqV
 
 int get_refs (const char *src_path, const char *ext, struct queue *queue)
 {
