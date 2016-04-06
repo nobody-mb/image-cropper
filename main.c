@@ -145,11 +145,10 @@ char *pop (struct queue *queue)
 	return item;
 }
 
-int cmp_block_asm (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic, 
-		   int img_x, int cmp_x, int cmp_len)
+int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
+	       int img_x, int cmp_x, int cmp_len)
 {
-	
-	//well similarly you can use repz scasb to compare a block and then stop when a mismatch is found
+#ifdef X86_64_SUPPORTED
 	int rval = 0;
 	asm volatile ("movq %%rcx, %%r10\n"		/* magic */
 		      "movq %%rdx, %%r11\n"		/* img_x */
@@ -168,7 +167,7 @@ int cmp_block_asm (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		      "addq %%r15, %%r8\n"
 		      "movq %%rbx, %%r9\n"
 		      "addq %%r15, %%r9\n"
-		      "movb (%%r8), %%cl\n"
+		      "movb (%%r8), %%cl\n"		/* use repz scasb */
 		      "movb (%%r9), %%dl\n"
 		      "cmpb %%cl, %%dl\n"
 		      "jg dl_larger\n"
@@ -202,11 +201,7 @@ int cmp_block_asm (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		      );
 	
 	return rval;
-}
-
-int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
-	       int img_x, int cmp_x, int cmp_len)
-{
+#else
 	int cmp_total = 0;
 	int cmp_xpos = 0;
 	unsigned char cmp_cur = 0;
@@ -234,6 +229,7 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		return 0;
 	
 	return -1;
+#endif
 }
 
 int cmp_img (struct img_dt *img, struct img_dt *cmp, int magic)
@@ -247,7 +243,7 @@ int cmp_img (struct img_dt *img, struct img_dt *cmp, int magic)
 
 	int img_xpos = 0;
 	for (i = 0; i < img_len; i++) {
-		if (!cmp_block_asm(cmp->flat, img->flat + i, magic, 
+		if (!cmp_block(cmp->flat, img->flat + i, magic, 
 			       img->x, cmp->x, cmp_len))
 			return i;
 
@@ -260,40 +256,16 @@ int cmp_img (struct img_dt *img, struct img_dt *cmp, int magic)
 	return -1;
 }	
 
-void alloc_image_data (unsigned char ***dst, int y, int x)
-{
-	*dst = malloc(sizeof(unsigned char *) * y);
-	
-	while (y--)
-		(*dst)[y] = malloc(x * sizeof(unsigned char));
-}
-
-void destroy_image_data (unsigned char **src, int y)
-{
-	while (y--)
-		free(src[y]);
-	
-	free(src); 
-}
-
 int alloc_img_from_file (const char *fname, struct img_dt *ptr, int expect_size)
 {
-	unsigned char *buffer;
-	int i;
-
-	buffer = stbi_load(fname, &ptr->x, &ptr->y, &ptr->pixsz, 0);
+	unsigned char *buffer = stbi_load(fname, &ptr->x, &ptr->y, &ptr->pixsz, 0);
 	
 	ptr->x *= ptr->pixsz;
 	
 	ptr->flat = malloc(ptr->y * ptr->x);
 	memcpy(ptr->flat, buffer, ptr->y * ptr->x);
 
-	alloc_image_data(&ptr->img, ptr->y, ptr->x);
-	
-	for (i = 0; i < ptr->y; i++)
-		memcpy(ptr->img[i], &buffer[i * (ptr->x)], ptr->x);
-	
-    stbi_image_free(buffer);
+    	stbi_image_free(buffer);
 
 	fprintf(stderr, "alloc image %s (%d x %d) pixsz = %d\n", 
 		fname, ptr->x, ptr->y, ptr->pixsz);
@@ -301,152 +273,40 @@ int alloc_img_from_file (const char *fname, struct img_dt *ptr, int expect_size)
 	return 0;
 }
 
-/* copies the file "src_path" into the directory "dst_path" */
-ssize_t file_copy (const char *dst_path, const char *src_path)
+int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr, unsigned char *cmp_start)
 {
-	int src_fd, dst_fd;
-	ssize_t res;
-	char wpath[1024];
-	const char *filename;
-	struct stat st;
-	
-	if (stat(src_path, &st) < 0 || S_ISDIR(st.st_mode))
-		return -1;
-	
-	if (stat(dst_path, &st) < 0 || !S_ISDIR(st.st_mode))
-		return -1;
-
-	strncpy(wpath, dst_path, sizeof(wpath) - 1);
-	if ((filename = get_last(src_path, '/') + 1) == NULL)
-		return -1;
-	strncat(wpath, "/", sizeof(wpath) - 1);
-	strncat(wpath, filename, sizeof(wpath) - 1);
-	
-	fprintf(stderr, "[%s]: copying: \n\t\"%s\" to: \n\t\"%s\"\n", 
-		__func__, src_path, wpath);
-	
-	if ((src_fd = open(src_path, O_RDONLY, 0777)) < 0)
-		return -1;
-	
-	if ((dst_fd = open(wpath, O_WRONLY|O_EXCL|O_CREAT, 0777)) < 0)
-		return -1;
-	
-	while ((res = read(src_fd, wpath, sizeof(wpath))) > 0)
-		if (write(dst_fd, wpath, res) != res)
-			return -1;
-	
-	close(src_fd);
-	close(dst_fd);
-	
-	return 0;
-}
-
-int check_image (const char *name, const char *dst, struct img_dt *cmp)
-{
-	struct img_dt img;
-	int retn = -1;
-	
-	if (alloc_img_from_file(name, &img, cmp->pixsz))
-		return -1;
-	
-	if (img.pixsz == cmp->pixsz && cmp_img(&img, cmp, 32) >= 0)
-		if (!(retn = (int)file_copy(dst, name)))
-			remove(name);
-	
-	free(img.flat);
-	destroy_image_data(img.img, img.y);
-	
-	return retn;
-}
-
-/* looks for the image "comp" in the .pngs found in "src_path", 
- copies pngs to directory "dst" if found (needs to be same format) */
-int run (const char *src_path, const char *comp, const char *dst)
-{
-	struct img_dt cmp;
-	struct dirent *ds;
-	struct stat st;
-	char wpath[1024];
-	DIR *dr;
-	
-	alloc_img_from_file(comp, &cmp, 0);
-	
-	if ((dr = opendir(src_path)) == NULL)
-		return -1;
-	
-	while ((ds = readdir(dr))) {
-		if (*(ds->d_name) != '.') {
-			memset(wpath, 0, sizeof(wpath));
-			snprintf(wpath, sizeof(wpath), "%s/%s", src_path, ds->d_name);
-			
-			if (stat(wpath, &st) >= 0 && 
-			    !S_ISDIR(st.st_mode) && 
-			    !check_image(wpath, dst, &cmp))
-				fprintf(stderr, "found matching file %s\n", ds->d_name);
-			
-			
-		}
-	}
-	
-	closedir(dr);
-	
-	free(cmp.flat);
-	destroy_image_data(cmp.img, cmp.y);
-	
-	return 0;
-}
-
-int find_x_boundary_asm (int x1, int pixsz, int img_x, unsigned char *cmp_ptr, unsigned char *cmp_start)
-{
+#ifdef X86_64_SUPPORTED
 	x1 *= pixsz;
 	
 	asm volatile ("movq %%rax, %%r8\n"		/* x1 */
-					"movq %%rbx, %%r9\n"	/* pixsz */
-					"movq %%rcx, %%r10\n"	/* img_x */
+				"movq %%rbx, %%r9\n"	/* pixsz */
+				"movq %%rcx, %%r10\n"	/* img_x */
 			"fxb_loop1:\n" 
 				"cmpq %%r8, %%r10\n"
 				"jl fxb_endloop\n"
-
 				"xorq %%rdx, %%rdx\n"		/* i */
 			"fxb_subloop:\n"
 				"cmpq %%rdx, %%r9\n"
 				"jl fxb_endloop\n"
-			
 				"movb (%%rdi, %%rdx), %%al\n"
 				"movb (%%rsi, %%rdx), %%bl\n"
-				
 				"incq %%rdx\n"
-		
 				"cmpb %%al, %%bl\n"
 				"je fxb_subend\n"
-
 				"jmp fxb_subloop\n"
-			
 			"fxb_subend:\n"
 				"cmpq %%rdx, %%r9\n"
 				"jl fxb_endloop\n"
-		
 				"addq %%r9, %%rdi\n"
 				"addq %%r9, %%r8\n"
-				
 				"jmp fxb_loop1\n"
 			"fxb_endloop:\n"
 				"movq %%r8, %%rax\n"
-
 				: "=a" (x1)
-				: "a" (x1),
-					"b" (pixsz),
-					"c" (img_x),
-					"S" (cmp_start),
-					"D" (cmp_ptr)
+				: "a" (x1), "b" (pixsz), "c" (img_x),
+					"S" (cmp_start), "D" (cmp_ptr)
 				: "rdx", "r8", "r9", "r10" );
-
-	return x1 / pixsz;
-}
-
-int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr, unsigned char *cmp_start)
-{
-#if 0
+#else
 	int i;
 	
 	for (x1 *= pixsz; x1 < img_x; x1 += pixsz) {
@@ -459,97 +319,71 @@ int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr, unsig
 		
 		cmp_ptr += pixsz;
 	}
-
-	return x1 /= pixsz;
-	
-#else
-	return find_x_boundary_asm(x1, pixsz, img_x, cmp_ptr, cmp_start);
-	
 #endif
+
+	return x1 / pixsz;
 }
 
-int find_most_common_asm (int x1, int y1, int pixsz, int img_y, unsigned char *column_buffer)
+int find_most_common (int y1, int pixsz, int img_y, unsigned char *column_buffer)
 {
+#ifdef X86_64_SUPPORTED
 	int max = 0;
 	int num = (img_y - y1);
 	
-	asm volatile ("movq %%rax, %%r8\n"		/* x1 */
-				"movq %%rbx, %%r9\n"		/* num */
-				"movq %%rcx, %%r10\n"		/* pixsz */
+	asm volatile (		"movq %%rcx, %%r10\n"		/* pixsz */
 				"xorq %%r11, %%r11\n"		/* max */
-				"movq %%rsi, %%r12\n"		/* cmp_start */
 				"movq %%rsi, %%rdi\n"		/* cmp_ptr */
 				"xorq %%r13, %%r13\n"		/* i */
 				"xorq %%r15, %%r15\n"		/* num  */
-				"xorq %%rbx, %%rbx\n"		/* max_pos */
-				
+				"xorq %%r8, %%r8\n"		/* max_pos */
 			"fmc_mainloop:\n"
-				"cmpq %%r13, %%r9\n"
+				"cmpq %%r13, %%rbx\n"	/* i, num */
 				"jl fmc_endloop\n"
-				
-				"xorq %%rax, %%rax\n"		/* tmp_pos */
-				"movq %%r9, %%r15\n"
-				"movq %%rsi, %%rdi\n"
-				
-				"movq %%r9, %%rcx\n"
-				"imulq %%r10, %%rcx\n"		/* num  pixsz */
-				"addq %%rcx, %%rdi\n"
-				
+				"xorq %%rax, %%rax\n"	/* tmp_pos = 0 */
+				"movq %%rbx, %%r15\n"	/* num1 = num */
+				"movq %%rsi, %%rdi\n"	/* cmp_ptr = cmp_start */
+				"imulq %%r10, %%r15\n"	/* num1 *= pixsz */
+				"addq %%rcx, %%rdi\n"	/* cmp_ptr += num1 */
+				"movq %%rbx, %%r15\n"	/* num1 = num */
 			"fmc_numloop:\n"
-				"decq %%r15\n"
+				"decq %%r15\n"		/* num1-- */
 				"jz fmc_numend\n"
-				
-				"subq %%r10, %%rdi\n"
-				
-				"xorq %%r14, %%r14\n"		/* j */
+				"subq %%r10, %%rdi\n"	/* cmp_ptr -= pixsz */
+				"xorq %%r14, %%r14\n"	/* j = 0 */
 			"fmc_pixloop:\n"
-				"cmpq %%r14, %%r10\n"
-				"jl fmc_pixend\n"
-				
-				"movb (%%rsi, %%r14), %%cl\n"
+				"cmpq %%r14, %%r10\n"	/* j, pixsz */
+				"jle fmc_pixend\n"
+				"movb (%%rsi, %%r14), %%cl\n"	
 				"movb (%%rdi, %%r14), %%dl\n"
-				"cmpb %%cl, %%dl\n"
+				"cmpb %%cl, %%dl\n"	/* cmpptr[j] == cmpstart[j] */
 				"jne fmc_pixend\n"
-								
-				"incq %%r14\n"
+				"incq %%r14\n"		/* ++j */
 				"jmp fmc_pixloop\n"
 			"fmc_pixend:\n"	
-			
-				"cmpq %%r14, %%r10\n"
+				"cmpq %%r14, %%r10\n"	/* j == pixsz */
 				"jne fmc_numloop\n"
-				"incq %%rax\n"
+				"incq %%rax\n"		/* ++tmp_pos */
 				"jmp fmc_numloop\n"
-			
 			"fmc_numend:\n"
-				"cmpq %%rax, %%rbx\n"
-				"jle fmc_not_found\n"
-				
-				"movq %%r13, %%r11\n"
-				"movq %%rax, %%rbx\n"
-			
+				"cmpq %%rax, %%r8\n"	/* tmp_pos, max_pos */
+				"jg fmc_not_found\n"
+				"movq %%r13, %%r11\n"	/* max = i */
+				"movq %%rax, %%r8\n"	/* max_pos = tmp_pos */
 			"fmc_not_found:\n"
-				"addq %%r10, %%r12\n"
-				
-				"incq %%r13\n"
+				"addq %%r10, %%rsi\n"	/* cmp_start += pixsz */
+				"incq %%r13\n"		/* i++ */
 				"jmp fmc_mainloop\n"
 			"fmc_endloop:\n"	
-			
-				"movq %%r11, %%rax\n"
+				"movq %%r11, %%rax\n"	/* max = max */
 			: "=a" (max) : 
-				"a" (x1),
 				"b" (num),
 				"c" (pixsz),
-				"d" (img_y),
 				"S" (column_buffer)
-			: "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15");
+			: "rax", "r8", "r9", "r10", "r11", "r13", 
+				"r14", "r15", "rdi", "rdx");
 	
 	return max;
-
-}
-
-int find_most_common (int x1, int y1, int pixsz, int img_y, unsigned char *column_buffer)
-{
-#if 1
+#else
 	int i, j;
 	int max = 0;
 	int tmp_pos = 0;
@@ -582,13 +416,13 @@ int find_most_common (int x1, int y1, int pixsz, int img_y, unsigned char *colum
 	}
 	
 	return max;
-#else
-	return find_most_common_asm(x1, y1, pixsz, img_y, column_buffer);
 #endif
 }
 
-int find_last_mc_asm (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x, int img_y, int y1, int pixsz)
+int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x, 
+			int img_y, int y1, int pixsz)
 {
+#ifdef X86_64_SUPPORTED
 	int retn = 0;
 
 	asm volatile ("movq %%rax, %%r8\n"		/* y1 */
@@ -597,19 +431,15 @@ int find_last_mc_asm (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_
 				"movq %%rdx, %%r11\n"		/* img_y */
 				"movq %%rdx, %%r12\n"		/* temp */
 				"xorq %%rax, %%rax\n"		/* i */
-				
 			"flm_loop:\n"
 				"cmpq %%r12, %%r8\n"
 				"jg flm_exit\n"
 				"cmpq %%rax, %%r9\n"
 				"je flm_exit\n"
-				
 				"subq %%r10, %%rdi\n"
 				"decq %%r12\n"
-				
 				"subq %%rax, %%rsi\n"
 				"subq %%rax, %%rdi\n"
-				
 				"xorq %%rax, %%rax\n"
 			"flm_subloop:\n"
 				"cmpq %%rax, %%r9\n"
@@ -620,10 +450,8 @@ int find_last_mc_asm (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_
 				"jne flm_loop\n"
 				"incq %%rax\n"
 				"jmp flm_subloop\n"
-
 			"flm_exit:\n"
 				"movq %%r12, %%rax\n"
-				
 			: "=a" (retn) : "a" (y1),
 				"b" (pixsz),
 				"c" (img_x),
@@ -632,12 +460,8 @@ int find_last_mc_asm (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_
 				"D" (cmp_ptr)
 			: "r8", "r9", "r10", "r11", "r12");
 			
-		return (retn <= y1) ? (img_y - 1) : retn;
-}
-
-int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x, int img_y, int y1, int pixsz)
-{
-#if 0
+	return (retn <= y1) ? (img_y - 1) : retn;
+#else
 	int temp = img_y;
 	
 	int i = 0;
@@ -652,16 +476,14 @@ int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x, i
 	}
 	
 	return (temp <= y1) ? (img_y - 1) : temp;
-#else 
-	return find_last_mc_asm(cmp_start, cmp_ptr, img_x, img_y, y1, pixsz);
 #endif
 }
 
-void build_col_buffer_asm (int y1, int img_x, int img_y, int pixsz, 
-				unsigned char *column_ptr, unsigned char *cmp_ptr)
+void build_col_buffer (int y1, int img_x, int img_y, int pixsz, 
+			unsigned char *column_ptr, unsigned char *cmp_ptr)
 {
-	asm volatile (
-			"movq %%rbx, %%r8\n"			/* img_x */
+#ifdef X86_64_SUPPORTED
+	asm volatile (  "movq %%rbx, %%r8\n"			/* img_x */
 			"movq %%rdx, %%r9\n"			/* pixsz */
 		"bcb_loop:\n"
 			"cmpq %%rax, %%rcx\n"
@@ -670,7 +492,6 @@ void build_col_buffer_asm (int y1, int img_x, int img_y, int pixsz,
 		"bcb_pixloop:\n"
 			"cmpq %%rdx, %%r9\n"
 			"jle bcb_pixend\n"
-	
 			"movb (%%rsi, %%rdx), %%bl\n"
 			"movb %%bl, (%%rdi)\n"
 			"incq %%rdi\n"
@@ -683,11 +504,7 @@ void build_col_buffer_asm (int y1, int img_x, int img_y, int pixsz,
 		"bcb_end:\n"
 			:: "a" (y1), "b" (img_x), "c" (img_y), "d" (pixsz), 
 				"D" (column_ptr), "S" (cmp_ptr): "r8", "r9");
-}
-
-void build_col_buffer (int y1, int img_x, int img_y, int pixsz, unsigned char *column_ptr, unsigned char *cmp_ptr)
-{
-	#if 0
+#else
 	int i; 
 	
 	for (; y1 < img_y; y1++) {
@@ -696,10 +513,7 @@ void build_col_buffer (int y1, int img_x, int img_y, int pixsz, unsigned char *c
 
 		cmp_ptr += img_x;
 	}
-	
-	#else
-	build_col_buffer_asm (y1, img_x, img_y, pixsz, column_ptr, cmp_ptr);
-	#endif
+#endif
 }
 
 int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x, 
@@ -723,7 +537,7 @@ int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x,
 	build_col_buffer (y0, img_x, img_y, pixsz, column_buffer, 
 						flat + (img_x * y0) + (x0 * pixsz));
 	
-	max = find_most_common(x1, y0, pixsz, img_y, column_buffer);
+	max = find_most_common(y0, pixsz, img_y, column_buffer);
 
 	*y1p = find_last_mc(column_buffer + (max * pixsz), 
 						flat + (img_y * img_x) + (x0 * pixsz), 
@@ -735,12 +549,14 @@ int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x,
 	return 0;
 }
 
-int crop_window (const char *name, struct img_dt topleft, struct img_dt btmright)
+//output (rdi), input (rsi), start (rdx), end (rcx)
+
+int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct img_dt btmright)
 {
 	struct img_dt img;
 	int retn = -1;
 	
-	if (alloc_img_from_file(name, &img, topleft.pixsz))
+	if (alloc_img_from_file(name, &img, topleft[0].pixsz))
 		return -1;
 	
 	char wpath[1024];
@@ -749,7 +565,11 @@ int crop_window (const char *name, struct img_dt topleft, struct img_dt btmright
 	int tl_pos = 0, br_pos = 0;
 	unsigned int x0, y0, x1, y1;
 	
-	if ((tl_pos = cmp_img(&img, &topleft, 256)) > 0) {
+	int i;
+	
+	for (i = 0; i < num_tls; i++) {
+	
+	if ((tl_pos = cmp_img(&img, &topleft[i], 256)) > 0) {
 		if ((br_pos = cmp_img(&img, &btmright, 256)) > 0) {
 			y0 = (tl_pos / img.x);
 			x0 = (tl_pos % img.x) / img.pixsz;
@@ -766,7 +586,7 @@ int crop_window (const char *name, struct img_dt topleft, struct img_dt btmright
 			y1 = y0 = (tl_pos / img.x);
 			x0 = (tl_pos % img.x) / img.pixsz;
 
-			detect_br(&x1, &y1, topleft.x, img.x, img.y, img.pixsz, tl_pos, img.flat);
+			detect_br(&x1, &y1, topleft[i].x, img.x, img.y, img.pixsz, tl_pos, img.flat);
 			
 						
 			printf("******** (%d, %d) -> (%d, %d)\n", x0, y0, x1, y1);
@@ -776,29 +596,32 @@ int crop_window (const char *name, struct img_dt topleft, struct img_dt btmright
 					      x0, y0, x1, y1, wpath);
 		} 
 	}
+	}
 	
 	free(img.flat);
-	destroy_image_data(img.img, img.y);
 	
 	return retn;
 }
 
 /* looks for the image "comp" in the .pngs found in "src_path", 
    copies pngs to directory "dst" if found (needs to be same format) */
-int run_crop (const char *src_path, const char *tl_path, const char *br_path)
+int run_crop (const char *src_path, char **tl_paths, int num_tl, const char *br_path)
 {
 	struct dirent *ds;
 	struct stat st;
 	char wpath[1024];
 	DIR *dr;
+	int i;
 	
-	struct img_dt topleft, btmright;
+	struct img_dt *topleft, btmright;
 	
-	memset(&topleft, 0, sizeof(struct img_dt));
+	topleft = calloc(sizeof(struct img_dt), num_tl);
 	memset(&btmright, 0, sizeof(struct img_dt));
 	
-	if (alloc_img_from_file(tl_path, &topleft, 0))
-		return -1;
+	for (i = 0; i < num_tl; i++)
+		if (alloc_img_from_file(tl_paths[i], &topleft[i], 0))
+			return -1;
+			
 	if (alloc_img_from_file(br_path, &btmright, 0))
 		return -1;
 
@@ -812,21 +635,19 @@ int run_crop (const char *src_path, const char *tl_path, const char *br_path)
 			
 			if (stat(wpath, &st) >= 0 && 
 			    !S_ISDIR(st.st_mode) && 
-			    !crop_window(wpath, topleft, btmright))
+			    !crop_window(wpath, topleft, num_tl, btmright))
 				fprintf(stderr, "found matching file %s\n", ds->d_name);
-			
-			
 		}
 	}
 	
 	closedir(dr);
 	
 	free(btmright.flat);
-	destroy_image_data(btmright.img, btmright.y);
 	
-	free(topleft.flat);
-	destroy_image_data(topleft.img, topleft.y);
-	
+	for (i = 0; i < num_tl; i++) {
+		free(topleft[i].flat);
+	}
+
 	return 0;
 }
 
@@ -867,13 +688,8 @@ int main (int argc, const char **argv)
 {
 	const char *src = "/Users/nobody1/Desktop/dir";
 	const char *ref = "/Users/nobody1/Desktop/ref";
-	const char *dst = "/Users/nobody1/Desktop/out";
-	const char *cur = NULL;
-	
-	const char *tl_path = "/Users/nobody1/Desktop/ref/topleft.png";
-	const char *br_path = "/Users/nobody1/Desktop/ref/btmright.png";
-	
-	return run_crop(src, tl_path, br_path);
+	const char *br_path = "/Users/nobody1/Desktop/ref2/btmright.png";
+	char *cur = NULL;
 	
 	struct queue que;
 	
@@ -881,14 +697,27 @@ int main (int argc, const char **argv)
 	
 	get_refs(ref, ".png", &que);
 	
+	if (que.size == 0)
+		return -1;
+		
+	char **refs = calloc(que.size, sizeof(char *));
+	int rsize = que.size;
+	
 	while (que.size) {
 		cur = pop(&que);
-		printf("%s\n", cur);
-		
-		if (run(src, cur, dst) < 0) {
-			fprintf(stderr, "error\n");
-		}
+		refs[que.size] = cur;
 	}
+	
+	if (run_crop(src, refs, rsize, br_path) < 0)
+		fprintf(stderr, "crop error\n");
+	
+	int i;
+	for (i = 0; i < rsize; i++) {
+		printf("%s\n", refs[i]);
+		free(refs[i]);
+	}
+	
+	free(refs);
 
 	return 0;
 }
