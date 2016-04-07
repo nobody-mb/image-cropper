@@ -276,36 +276,23 @@ int alloc_img_from_file (const char *fname, struct img_dt *ptr, int expect_size)
 int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr, unsigned char *cmp_start)
 {
 #ifdef X86_64_SUPPORTED
-	x1 *= pixsz;
-	
-	asm volatile ("movq %%rax, %%r8\n"		/* x1 */
-				"movq %%rbx, %%r9\n"	/* pixsz */
-				"movq %%rcx, %%r10\n"	/* img_x */
-			"fxb_loop1:\n" 
-				"cmpq %%r8, %%r10\n"
-				"jl fxb_endloop\n"
-				"xorq %%rdx, %%rdx\n"		/* i */
-			"fxb_subloop:\n"
-				"cmpq %%rdx, %%r9\n"
-				"jl fxb_endloop\n"
-				"movb (%%rdi, %%rdx), %%al\n"
-				"movb (%%rsi, %%rdx), %%bl\n"
-				"incq %%rdx\n"
-				"cmpb %%al, %%bl\n"
-				"je fxb_subend\n"
-				"jmp fxb_subloop\n"
-			"fxb_subend:\n"
-				"cmpq %%rdx, %%r9\n"
-				"jl fxb_endloop\n"
-				"addq %%r9, %%rdi\n"
-				"addq %%r9, %%r8\n"
-				"jmp fxb_loop1\n"
-			"fxb_endloop:\n"
-				"movq %%r8, %%rax\n"
-				: "=a" (x1)
-				: "a" (x1), "b" (pixsz), "c" (img_x),
-					"S" (cmp_start), "D" (cmp_ptr)
-				: "rdx", "r8", "r9", "r10" );
+	asm volatile (	"imulq %%rbx, %%rax\n"
+			"movq %%rcx, %%rdx\n"	/* img_x */
+		"fxb_loop1:\n" 
+			"cmpq %%rax, %%rdx\n"
+			"jl fxb_endloop\n"
+			"movq %%rbx, %%rcx\n"
+			"cld\n"
+			"repe cmpsb\n"
+			"jnz fxb_endloop\n"
+			"subq %%rbx, %%rsi\n"
+			"addq %%rbx, %%rax\n"
+			"jmp fxb_loop1\n"
+		"fxb_endloop:\n" 
+			: "=a" (x1)
+			: "a" (x1), "b" (pixsz), "c" (img_x),
+				"S" (cmp_start), "D" (cmp_ptr)
+				: "rdx");
 #else
 	int i;
 	
@@ -483,27 +470,17 @@ void build_col_buffer (int y1, int img_x, int img_y, int pixsz,
 			unsigned char *column_ptr, unsigned char *cmp_ptr)
 {
 #ifdef X86_64_SUPPORTED
-	asm volatile (  "movq %%rbx, %%r8\n"			/* img_x */
-			"movq %%rdx, %%r9\n"			/* pixsz */
+	asm volatile (  "subq %%rcx, %%rax\n"
+			"subq %%rdx, %%rbx\n"
 		"bcb_loop:\n"
-			"cmpq %%rax, %%rcx\n"
-			"jl bcb_end\n"
-			"xorq %%rdx, %%rdx\n"			/* i */
-		"bcb_pixloop:\n"
-			"cmpq %%rdx, %%r9\n"
-			"jle bcb_pixend\n"
-			"movb (%%rsi, %%rdx), %%bl\n"
-			"movb %%bl, (%%rdi)\n"
-			"incq %%rdi\n"
-			"incq %%rdx\n"
-			"jmp bcb_pixloop\n"
-		"bcb_pixend:\n"
-			"addq %%r8, %%rsi\n"
-			"incq %%rax\n"
-			"jmp bcb_loop\n"
-		"bcb_end:\n"
-			:: "a" (y1), "b" (img_x), "c" (img_y), "d" (pixsz), 
-				"D" (column_ptr), "S" (cmp_ptr): "r8", "r9");
+			"movq %%rdx, %%rcx\n"
+			"cld\n"
+			"rep movsb\n"
+			"addq %%rbx, %%rsi\n"
+			"decq %%rax\n"
+			"jnz bcb_loop\n"
+		:: "c" (y1), "b" (img_x), "a" (img_y), "d" (pixsz), 
+			"D" (column_ptr), "S" (cmp_ptr));
 #else
 	int i; 
 	
