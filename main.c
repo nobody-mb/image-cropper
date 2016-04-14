@@ -317,31 +317,30 @@ int backwards_compare (unsigned char *column_buffer, unsigned char *cmp_start,
 	int tmp_pos = 0;
 	
 #ifdef X86_64_SUPPORTED
-	asm volatile (  "xorq %%r9, %%r9\n"		/* tmp_pos */
-			"movq %%rbx, %%r8\n"		/* j */
+	asm volatile (  "xorq %%rdx, %%rdx\n"		/* tmp_pos */
+			"movq %%rbx, %%rcx\n"		/* j */
 			"addq %%rbx, %%rdi\n"
 		"bcmp_loop:\n"
 			"decq %%rax\n"
 			"jz bcmp_end\n"
-			"decq %%r8\n"
+			"decq %%rcx\n"
 			"jnz bcmp_byte_cmp\n"
-			"incq %%r9\n"
+			"incq %%rdx\n"
 		"bcmp_byte_cmp:\n"
 			"std\n"
 			"cmpsb\n"
 			"je bcmp_loop\n"
 			"addq %%rbx, %%rdi\n"
-			"subq %%r8, %%rdi\n"
-			"movq %%rbx, %%r8\n"	/* j = pixsz */
+			"subq %%rcx, %%rdi\n"
+			"movq %%rbx, %%rcx\n"	/* j = pixsz */
 			"jmp bcmp_loop\n"
 		"bcmp_end:\n"
-			"movq %%r9, %%rdx\n"
 			: "=d" (tmp_pos)
 			: "S" (cmp_ptr),
 			  "D" (cmp_start),
 			  "a" (num),
 			  "b" (pixsz)
-			: "r8", "r9");
+			: "rcx");
 #else
 	int j = pixsz;
 	
