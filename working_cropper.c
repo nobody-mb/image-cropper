@@ -18,11 +18,14 @@ struct img_dt {
 	unsigned char *flat;
 };
 
+struct node {
+	char *item;
+	struct node *next;
+};
+
 struct queue {
-	struct node {
-		char *item;
-		struct node *next;
-	} *head, *tail;
+	struct node *head;
+	struct node *tail;
 	
 	int size;
 };
@@ -270,9 +273,8 @@ int alloc_img_from_file (const char *fname, struct img_dt *ptr, int expect_size)
 	return 0;
 }
 
-int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr)
+int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr, unsigned char *cmp_start)
 {
-	unsigned char *cmp_start = cmp_ptr;
 #ifdef X86_64_SUPPORTED
 	asm volatile (	"imulq %%rbx, %%rax\n"
 			"movq %%rcx, %%rdx\n"	/* img_x */
@@ -419,22 +421,14 @@ int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x,
 			"flm_loop:\n"
 				"cmpq %%r12, %%r8\n"
 				"jg flm_exit\n"
-				//"cmpq %%rax, %%r9\n"
-				//"je flm_exit\n"
+				"cmpq %%rax, %%r9\n"
+				"je flm_exit\n"
 				"subq %%r10, %%rdi\n"
 				"decq %%r12\n"
 				"subq %%rax, %%rsi\n"
 				"subq %%rax, %%rdi\n"
 				"xorq %%rax, %%rax\n"
-				"movq %%r9, %%rcx\n"
-				"repe cmpsb\n"
-				"subq %%r9, %%rsi\n"
-				"subq %%r9, %%rdi\n"
-				"addq %%rcx, %%rdi\n"
-				"addq %%rcx, %%rsi\n"
-				"cmpq $0, %%rcx\n"
-				"jne flm_loop\n"
-			/*"flm_subloop:\n"
+			"flm_subloop:\n"
 				"cmpq %%rax, %%r9\n"
 				"je flm_exit\n"
 				"movb (%%rsi, %%rax), %%bl\n"
@@ -442,7 +436,7 @@ int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x,
 				"cmpb %%bl, %%cl\n"
 				"jne flm_loop\n"
 				"incq %%rax\n"
-				"jmp flm_subloop\n"*/
+				"jmp flm_subloop\n"
 			"flm_exit:\n"
 				"movq %%r12, %%rax\n"
 			: "=a" (retn) : "a" (y1),
@@ -502,28 +496,29 @@ void build_col_buffer (int y1, int img_x, int img_y, int pixsz,
 int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x, 
 	       int img_y, int pixsz, int tl_pos, unsigned char *flat)
 {
-	unsigned char *column_buffer, *sptr;
+	unsigned char *column_buffer;
 	int x0, y0, x1, max = 0;
 	
 	if (!x1p || !y1p)
 		return -1;
 	
-	y0 = (tl_pos / img_x) - 1;
+	y0 = (tl_pos / img_x);
 	x0 = (topleft_x + (tl_pos % img_x)) / pixsz;
-	
-	sptr = flat + (img_x * y0) + (x0 * pixsz);
 
-	x1 = find_x_boundary(x0, pixsz, img_x, sptr);
+	x1 = find_x_boundary(x0, pixsz, img_x, flat + (y0 * img_x) + (x0 * pixsz), 
+						flat + (y0 * img_x) + (x0 * pixsz));
 	x0 -= (topleft_x / pixsz);
 	
 	column_buffer = calloc((img_y - y0 + 1), pixsz);
 
-	build_col_buffer (y0, img_x, img_y, pixsz, column_buffer, sptr);
+	build_col_buffer (y0, img_x, img_y, pixsz, column_buffer, 
+						flat + (img_x * y0) + (x0 * pixsz));
 	
 	max = find_most_common(y0, pixsz, img_y, column_buffer);
 
-	*y1p = find_last_mc(column_buffer + (max * pixsz), flat + (img_y * img_x) + 
-			(x0 * pixsz), img_x, img_y, y0, pixsz);
+	*y1p = find_last_mc(column_buffer + (max * pixsz), 
+						flat + (img_y * img_x) + (x0 * pixsz), 
+						img_x, img_y, y0, pixsz);
 	*x1p = x1;
 	
 	free(column_buffer);
@@ -533,8 +528,7 @@ int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x,
 
 //output (rdi), input (rsi), start (rdx), end (rcx)
 
-int crop_window (const char *name, struct img_dt *topleft, int num_tls, 
-		struct img_dt btmright)
+int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct img_dt btmright)
 {
 	struct img_dt img;
 	int retn = -1;
@@ -551,26 +545,34 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls,
 	int i;
 	
 	for (i = 0; i < num_tls; i++) {
-		if ((tl_pos = cmp_img(&img, &topleft[i], 256)) <= 0)
-			continue;
-			
-		x0 = (tl_pos % img.x) / img.pixsz;
-		y1 = y0 = (tl_pos / img.x);
-		
+	
+	if ((tl_pos = cmp_img(&img, &topleft[i], 256)) > 0) {
 		if ((br_pos = cmp_img(&img, &btmright, 256)) > 0) {
+			y0 = (tl_pos / img.x);
+			x0 = (tl_pos % img.x) / img.pixsz;
+			
 			y1 = (br_pos / img.x) + btmright.y;
 			x1 = ((br_pos % img.x) + btmright.x) / img.pixsz;
+			
+			printf("%d -> %d | (%d, %d) -> (%d, %d)\n", tl_pos, br_pos, x0,y0,x1,y1);
+			
+			snprintf(wpath, sizeof(wpath), "%sc.png", name);
+			retn = crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, 
+					      x0, y0, x1, y1, wpath);
 		} else {
-			detect_br(&x1, &y1, topleft[i].x, img.x, img.y, img.pixsz, 
-					tl_pos, img.flat);
+			y1 = y0 = (tl_pos / img.x);
+			x0 = (tl_pos % img.x) / img.pixsz;
+
+			detect_br(&x1, &y1, topleft[i].x, img.x, img.y, img.pixsz, tl_pos, img.flat);
+			
+						
+			printf("******** (%d, %d) -> (%d, %d)\n", x0, y0, x1, y1);
+			
+			snprintf(wpath, sizeof(wpath), "%sc.png", name);
+			retn = crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, 
+					      x0, y0, x1, y1, wpath);
 		} 
-		
-		printf("%s: (%d, %d) -> (%d, %d)\n", (br_pos > 0) ? "found" : "detected", 
-							x0, y0, x1, y1);
-		
-		snprintf(wpath, sizeof(wpath), "%sc.png", name);
-		retn = crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, 
-					x0, y0, x1, y1, wpath);
+	}
 	}
 	
 	free(img.flat);
@@ -604,25 +606,24 @@ int run_crop (const char *src_path, char **tl_paths, int num_tl, const char *br_
 		return -1;
 	
 	while ((ds = readdir(dr))) {
-		if (*(ds->d_name) == '.')
-			continue;
+		if (*(ds->d_name) != '.') {
+			memset(wpath, 0, sizeof(wpath));
+			snprintf(wpath, sizeof(wpath), "%s/%s", src_path, ds->d_name);
 			
-		memset(wpath, 0, sizeof(wpath));
-		snprintf(wpath, sizeof(wpath), "%s/%s", src_path, ds->d_name);
-			
-		if (stat(wpath, &st) < 0 || S_ISDIR(st.st_mode) || 
-			crop_window(wpath, topleft, num_tl, btmright))
-			continue;
-			
-		fprintf(stderr, "found matching file %s\n", ds->d_name);
+			if (stat(wpath, &st) >= 0 && 
+			    !S_ISDIR(st.st_mode) && 
+			    !crop_window(wpath, topleft, num_tl, btmright))
+				fprintf(stderr, "found matching file %s\n", ds->d_name);
+		}
 	}
 	
 	closedir(dr);
 	
 	free(btmright.flat);
-
-	for (i = 0; i < num_tl; i++)
+	
+	for (i = 0; i < num_tl; i++) {
 		free(topleft[i].flat);
+	}
 
 	return 0;
 }
