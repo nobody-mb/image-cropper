@@ -410,42 +410,23 @@ int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x,
 #ifdef X86_64_SUPPORTED
 	int retn = 0;
 
-	asm volatile ("movq %%rax, %%r8\n"		/* y1 */
-				"movq %%rbx, %%r9\n"		/* pixsz */
-				"movq %%rcx, %%r10\n"		/* img_x */
-				"movq %%rdx, %%r11\n"		/* img_y */
-				"movq %%rdx, %%r12\n"		/* temp */
-				"xorq %%rax, %%rax\n"		/* i */
+	asm volatile (		"movq %%rcx, %%r10\n"		/* img_x */
 			"flm_loop:\n"
-				"cmpq %%r12, %%r8\n"
+				"cmpq %%rdx, %%rax\n"
 				"jg flm_exit\n"
-				//"cmpq %%rax, %%r9\n"
-				//"je flm_exit\n"
 				"subq %%r10, %%rdi\n"
-				"decq %%r12\n"
-				"subq %%rax, %%rsi\n"
-				"subq %%rax, %%rdi\n"
-				"xorq %%rax, %%rax\n"
-				"movq %%r9, %%rcx\n"
+				"decq %%rdx\n"
+				"movq %%rbx, %%rcx\n"
+				"cld\n"
 				"repe cmpsb\n"
-				"subq %%r9, %%rsi\n"
-				"subq %%r9, %%rdi\n"
+				"subq %%rbx, %%rsi\n"
+				"subq %%rbx, %%rdi\n"
 				"addq %%rcx, %%rdi\n"
 				"addq %%rcx, %%rsi\n"
 				"cmpq $0, %%rcx\n"
 				"jne flm_loop\n"
-			/*"flm_subloop:\n"
-				"cmpq %%rax, %%r9\n"
-				"je flm_exit\n"
-				"movb (%%rsi, %%rax), %%bl\n"
-				"movb (%%rdi, %%rax), %%cl\n"
-				"cmpb %%bl, %%cl\n"
-				"jne flm_loop\n"
-				"incq %%rax\n"
-				"jmp flm_subloop\n"*/
 			"flm_exit:\n"
-				"movq %%r12, %%rax\n"
-			: "=a" (retn) : "a" (y1),
+			: "=d" (retn) : "a" (y1),
 				"b" (pixsz),
 				"c" (img_x),
 				"d" (img_y),
