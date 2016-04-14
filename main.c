@@ -149,8 +149,8 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 	int rval = 0;
 	asm volatile ("movq %%rcx, %%r10\n"		/* magic */
 		      "movq %%rdx, %%r11\n"		/* img_x */
-		      "movq %%rsi, %%r12\n"		/* cmp_x */
-		      "movq %%rdi, %%r13\n"		/* cmp_len */
+		      "movq %%rax, %%r12\n"		/* cmp_x */
+		      "movq %%rbx, %%r13\n"		/* cmp_len */
 		      "xorq %%r14, %%r14\n"		/* cmp_total */
 		      "xorq %%r15, %%r15\n"		/* cmp_xpos */
 		"main_loop:\n"
@@ -160,9 +160,9 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		      "jz success\n"			/* cmp_len-- == 0 */
 		      "xorq %%rcx, %%rcx\n"		/* cmp_cur */
 		      "xorq %%rdx, %%rdx\n"		/* img_cur */
-		      "movq %%rax, %%r8\n"
+		      "movq %%rsi, %%r8\n"
 		      "addq %%r15, %%r8\n"
-		      "movq %%rbx, %%r9\n"
+		      "movq %%rdi, %%r9\n"
 		      "addq %%r15, %%r9\n"
 		      "movb (%%r8), %%cl\n"		/* use repz scasb */
 		      "movb (%%r9), %%dl\n"
@@ -178,24 +178,24 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		      "incq %%r15\n"
 		      "cmpq %%r12, %%r15\n" 
 		      "jl main_loop\n"		/* if cmp_xpos > cmp_x */
-		      "addq %%r12, %%rax\n"
-		      "addq %%r11, %%rbx\n"
+		      "addq %%r12, %%rsi\n"
+		      "addq %%r11, %%rdi\n"
 		      "xorq %%r15, %%r15\n"
 		      "jmp main_loop\n"
 		"failure:\n"
-		      "movq $-1, %%rax\n"
+		      "movq $-1, %%rsi\n"
 		      "jmp end\n"
 		"success:\n"
 		      "xorq %%rax, %%rax\n"
 		"end:\n"
 		      : "=a" (rval)
-		      : "a" (cmp_ptr),
-		        "b" (img_ptr),
+		      : "S" (cmp_ptr),
+		        "D" (img_ptr),
 		        "c" (magic),
 		        "d" (img_x),
-		        "S" (cmp_x),
-		        "D" (cmp_len)
-		      );
+		        "a" (cmp_x),
+		        "b" (cmp_len)
+		      : "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15");
 	
 	return rval;
 #else
@@ -290,7 +290,7 @@ int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr)
 			: "=a" (x1)
 			: "a" (x1), "b" (pixsz), "c" (img_x),
 				"S" (cmp_start), "D" (cmp_ptr)
-				: "rdx");
+			: "rdx");
 #else
 	int i;
 	
@@ -309,11 +309,62 @@ int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr)
 	return x1 / pixsz;
 }
 
+
+int backwards_compare (unsigned char *column_buffer, unsigned char *cmp_start,
+			int num, int pixsz)
+{
+	unsigned char *cmp_ptr = column_buffer + (num * pixsz);
+	int j = pixsz;
+	int tmp_pos = 0;
+	
+#ifdef X86_64_SUPPORTED
+	asm volatile (  "xorq %%r9, %%r9\n"		/* tmp_pos */
+			"movq %%rbx, %%r8\n"		/* j */
+		"bcmp_loop:\n"
+			"decq %%rax\n"
+			"jz bcmp_end\n"
+			"decq %%rsi\n"
+			"decq %%r8\n"
+			"movb (%%rsi), %%cl\n"
+			"movb (%%rdi, %%r8), %%dl\n"
+			"cmpb %%cl, %%dl\n"
+			"je bcmp_equal_byte\n"
+			"movq %%rbx, %%r8\n"	/* j = pixsz */
+		"bcmp_equal_byte:\n"
+			"cmpq $0, %%r8\n"
+			"jne bcmp_loop\n"
+			
+			"incq %%r9\n"		/* tmp_pos++ */
+			"movq %%rbx, %%r8\n"	/* j = pixsz */
+		
+			"jmp bcmp_loop\n"
+		"bcmp_end:\n"
+			"movq %%r9, %%rdx\n"
+			: "=d" (tmp_pos)
+			: "S" (cmp_ptr),
+			  "D" (cmp_start),
+			  "a" (num),
+			  "b" (pixsz));
+#else
+	while (--num) {
+		if (*--cmp_ptr != cmp_start[--j]) { 
+			j = pixsz;
+		}
+		if (j == 0) {
+			tmp_pos++;
+			j = pixsz;
+		}
+	}
+#endif
+	return tmp_pos;
+}
+
 int find_most_common (int y1, int pixsz, int img_y, unsigned char *column_buffer)
 {
-#ifdef X86_64_SUPPORTED
+#ifndef X86_64_SUPPORTED
 	int max = 0;
 	int num = (img_y - y1);
+	
 	
 	asm volatile (		"movq %%rcx, %%r10\n"		/* pixsz */
 				"xorq %%r11, %%r11\n"		/* max */
@@ -381,16 +432,7 @@ int find_most_common (int y1, int pixsz, int img_y, unsigned char *column_buffer
 		tmp_pos = 0;
 		num = img_y - y1;
 		
-		cmp_ptr = column_buffer + (num * pixsz);
-		while (--num) {
-			cmp_ptr -= pixsz;
-			for (j = 0; j < pixsz; j++)
-				if (cmp_ptr[j] != cmp_start[j])
-					break;
-			
-			if (j == pixsz)
-				++tmp_pos;				
-		}
+		tmp_pos = backwards_compare (column_buffer, cmp_start, img_y - y1, pixsz);
 
 		if (tmp_pos >= max_pos) {
 			max = i;
@@ -410,11 +452,11 @@ int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x,
 #ifdef X86_64_SUPPORTED
 	int retn = 0;
 
-	asm volatile (		"movq %%rcx, %%r10\n"		/* img_x */
+	asm volatile (		"movq %%rcx, %%r8\n"		/* img_x */
 			"flm_loop:\n"
 				"cmpq %%rdx, %%rax\n"
 				"jg flm_exit\n"
-				"subq %%r10, %%rdi\n"
+				"subq %%r8, %%rdi\n"
 				"decq %%rdx\n"
 				"movq %%rbx, %%rcx\n"
 				"cld\n"
@@ -432,7 +474,7 @@ int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x,
 				"d" (img_y),
 				"S" (cmp_start),
 				"D" (cmp_ptr)
-			: "r8", "r9", "r10", "r11", "r12");
+			: "r8");
 			
 	return (retn <= y1) ? (img_y - 1) : retn;
 #else
