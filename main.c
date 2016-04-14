@@ -314,29 +314,25 @@ int backwards_compare (unsigned char *column_buffer, unsigned char *cmp_start,
 			int num, int pixsz)
 {
 	unsigned char *cmp_ptr = column_buffer + (num * pixsz);
-	int j = pixsz;
 	int tmp_pos = 0;
 	
 #ifdef X86_64_SUPPORTED
 	asm volatile (  "xorq %%r9, %%r9\n"		/* tmp_pos */
 			"movq %%rbx, %%r8\n"		/* j */
+			"addq %%rbx, %%rdi\n"
 		"bcmp_loop:\n"
 			"decq %%rax\n"
 			"jz bcmp_end\n"
-			"decq %%rsi\n"
 			"decq %%r8\n"
-			"movb (%%rsi), %%cl\n"
-			"movb (%%rdi, %%r8), %%dl\n"
-			"cmpb %%cl, %%dl\n"
-			"je bcmp_equal_byte\n"
+			"jnz bcmp_byte_cmp\n"
+			"incq %%r9\n"
+		"bcmp_byte_cmp:\n"
+			"std\n"
+			"cmpsb\n"
+			"je bcmp_loop\n"
+			"addq %%rbx, %%rdi\n"
+			"subq %%r8, %%rdi\n"
 			"movq %%rbx, %%r8\n"	/* j = pixsz */
-		"bcmp_equal_byte:\n"
-			"cmpq $0, %%r8\n"
-			"jne bcmp_loop\n"
-			
-			"incq %%r9\n"		/* tmp_pos++ */
-			"movq %%rbx, %%r8\n"	/* j = pixsz */
-		
 			"jmp bcmp_loop\n"
 		"bcmp_end:\n"
 			"movq %%r9, %%rdx\n"
@@ -344,16 +340,21 @@ int backwards_compare (unsigned char *column_buffer, unsigned char *cmp_start,
 			: "S" (cmp_ptr),
 			  "D" (cmp_start),
 			  "a" (num),
-			  "b" (pixsz));
+			  "b" (pixsz)
+			: "r8", "r9");
 #else
+	int j = pixsz;
+	
+	cmp_start += pixsz;
 	while (--num) {
-		if (*--cmp_ptr != cmp_start[--j]) { 
-			j = pixsz;
-		}
-		if (j == 0) {
+		if (--j == 0)
 			tmp_pos++;
+			
+		if (*--cmp_ptr != *--cmp_start) {
+			cmp_start += (pixsz - j);
 			j = pixsz;
 		}
+
 	}
 #endif
 	return tmp_pos;
@@ -420,19 +421,16 @@ int find_most_common (int y1, int pixsz, int img_y, unsigned char *column_buffer
 	
 	return max;
 #else
-	int i, j;
+	int i;
 	int max = 0;
 	int tmp_pos = 0;
 	int max_pos = 0;
-	int num = 0;
-	unsigned char *cmp_ptr;
 	unsigned char *cmp_start = column_buffer; 
 	
-	for (i = 0; i < img_y - y1; i++) {
-		tmp_pos = 0;
-		num = img_y - y1;
-		
-		tmp_pos = backwards_compare (column_buffer, cmp_start, img_y - y1, pixsz);
+	img_y -= y1;
+	
+	for (i = 0; i < img_y; i++) {		
+		tmp_pos = backwards_compare (column_buffer, cmp_start, img_y, pixsz);
 
 		if (tmp_pos >= max_pos) {
 			max = i;
