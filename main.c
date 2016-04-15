@@ -420,10 +420,7 @@ int find_most_common (int y1, int pixsz, int img_y, unsigned char *column_buffer
 	
 	return max;
 #else
-	int i;
-	int max = 0;
-	int tmp_pos = 0;
-	int max_pos = 0;
+	int i, max = 0, tmp_pos = 0, max_pos = 0;
 	unsigned char *cmp_start = column_buffer; 
 	
 	img_y -= y1;
