@@ -9,8 +9,6 @@
 #include <stdint.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
 
 struct img_dt {
 	int x, y, pixsz;
@@ -19,68 +17,16 @@ struct img_dt {
 	char *path;
 };
 
-struct node {
-	char *item;
-	struct node *next;
-};
-
 struct queue {
-	struct node *head;
-	struct node *tail;
+	struct node {
+		char *item;
+		struct node *next;
+	} *head, *tail;
 	
 	int size;
 };
 
 #define X86_64_SUPPORTED __LP64__
-
-int crop_img (unsigned char *src_ptr, unsigned int src_x, unsigned int src_y, 
-	      char *dst_ptr, unsigned int x0, unsigned int y0, 
-	      unsigned int x1, unsigned int y1, unsigned int bpp)
-{
-	if (!src_ptr || !dst_ptr || !src_x || !src_y || 
-	    ((x0 *= bpp) >= (x1 *= bpp) || x1 > (src_x *= bpp)) ||
-	    (y0 >= y1 || y1 > src_y))
-		return -1;
-	
-	src_ptr += (y0 * src_x) + x0;
-	
-#ifdef X86_64_SUPPORTED
-	asm volatile ("movl %%ebx, %%r8d\n"	/* x1 */
-		      "movl %%eax, %%r9d\n"	/* dst_xpos */
-		      
-		      "rows_loop:\n"
-		      "cld\n"
-		      "movsb\n"
-		      
-		      "incl %%r9d\n"
-		      "cmpl %%r8d, %%r9d\n"
-		      "jl rows_loop\n"
-		      "addq %%rdx, %%rsi\n"
-		      "movl %%eax, %%r9d\n"
-		      "decl %%ecx\n"
-		      "jnz rows_loop\n"
-		      : : "D" (dst_ptr), "S" (src_ptr), "a" (x0), "b" (x1), 
-		      "c" (y1 - y0), "d" (x0 + src_x - x1): "bl");
-#else
-	int dst_xpos = x0;
-	int rows_left = y1 - y0;
-	int x1_to_end = x0 + src_x - x1;
-	
-	while (rows_left) {
-		*dst_ptr++ = *src_ptr++;
-		
-		if (++dst_xpos >= x1) {
-			src_ptr += x1_to_end;
-			dst_xpos = x0;
-			--rows_left;
-		}
-	}
-#endif
-	return 0;
-	
-}
-
-
 
 const char *get_last (const char *dir, unsigned char cmp)
 {
@@ -323,41 +269,45 @@ ssize_t file_copy (const char *dst_path, const char *src_path)
 	return 0;
 }
 
-
-
-int check_image (const char *name, const char *dst, struct img_dt *cmp)
-{
-	struct img_dt img;
-	int retn = -1;
-	
-	if (alloc_img_from_file(name, &img, cmp->pixsz))
-		return -1;
-	
-	if (img.pixsz == cmp->pixsz && !cmp_img(&img, cmp, 16))
-		if (!(retn = (int)file_copy(dst, name)))
-			remove(name);
-	
-	free(img.flat);
-	free(img.path);
-	
-	return retn;
-}
-
 int crop_window (const char *name, struct img_dt *topleft, int num_tls)
 {
 	struct img_dt img;
 	int i;
-
+	char *ptr;
+	
 	if (alloc_img_from_file(name, &img, topleft[0].pixsz))
 		return -1;
 	
 	char wpath[1024];
+	struct stat st;
 	
-	memset(wpath, 0, sizeof(wpath));
 
 	for (i = 0; i < num_tls; i++) {
 		if (cmp_img(&img, &topleft[i], 256) >= 0) {
-			printf("matches %s\n", topleft[i].path);
+			memset(wpath, 0, sizeof(wpath));
+			
+			strncpy(wpath, topleft[i].path, sizeof(wpath));
+			
+			printf("matches %s (%s)\n", topleft[i].path, wpath);
+			
+			if ((ptr = (char *)get_last(wpath, '.')) == NULL) {
+				printf("could not get ext\n");
+				continue;
+			}
+			
+			*ptr = 0;
+			
+			if (stat(wpath, &st)) {
+				if (mkdir(wpath, 0777)) {
+					printf("couldnt create folder %s\n", wpath);
+					continue;
+				}
+				printf("creating folder %s\n", wpath);
+			}
+			
+			if (!file_copy(wpath, name))
+				remove(name);
+			
 		}
 	}
 	
@@ -366,8 +316,6 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls)
 	
 	return 0;
 }
-
-
 
 /* looks for the image "comp" in the .pngs found in "src_path", 
  copies pngs to directory "dst" if found (needs to be same format) */
@@ -411,8 +359,6 @@ int run_crop (const char *src_path, char **tl_paths, int num_tl)
 	
 	return 0;
 }
-
-
 
 int main (int argc, const char **argv)
 {
