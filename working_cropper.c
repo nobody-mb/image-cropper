@@ -260,6 +260,9 @@ int alloc_img_from_file (const char *fname, struct img_dt *ptr, int expect_size)
 {
 	unsigned char *buffer = stbi_load(fname, &ptr->x, &ptr->y, &ptr->pixsz, 0);
 	
+	if (!buffer)
+		return -1;
+	
 	ptr->x *= ptr->pixsz;
 	
 	ptr->flat = malloc(ptr->y * ptr->x);
