@@ -150,47 +150,34 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 {
 #ifdef X86_64_SUPPORTED
 	int rval = 0;
-	asm volatile ("movq %%rcx, %%r10\n"		/* magic */
-		      "movq %%rdx, %%r11\n"		/* img_x */
-		      "movq %%rsi, %%r12\n"		/* cmp_x */
-		      "movq %%rdi, %%r13\n"		/* cmp_len */
-		      "xorq %%r14, %%r14\n"		/* cmp_total */
-		      "xorq %%r15, %%r15\n"		/* cmp_xpos */
-		"main_loop:\n"
-		      "cmpq %%r10, %%r14\n"
-		      "jge failure\n"			/* cmp_total >= magic */
-		      "decq %%r13\n"
-		      "jz success\n"			/* cmp_len-- == 0 */
-		      "xorq %%rcx, %%rcx\n"		/* cmp_cur */
-		      "xorq %%rdx, %%rdx\n"		/* img_cur */
-		      "movq %%rax, %%r8\n"
-		      "addq %%r15, %%r8\n"
-		      "movq %%rbx, %%r9\n"
-		      "addq %%r15, %%r9\n"
-		      "movb (%%r8), %%cl\n"		/* use repz scasb */
-		      "movb (%%r9), %%dl\n"
-		      "cmpb %%cl, %%dl\n"
-		      "jg dl_larger\n"
-		      "subb %%cl, %%dl\n"
-		      "addq %%rdx, %%r14\n"
-		      "jmp after_sub\n"
-		"dl_larger:\n"
-		      "subb %%dl, %%cl\n"
-		      "addq %%rcx, %%r14\n"
-		"after_sub:\n"
-		      "incq %%r15\n"
-		      "cmpq %%r12, %%r15\n" 
-		      "jl main_loop\n"		/* if cmp_xpos > cmp_x */
-		      "addq %%r12, %%rax\n"
-		      "addq %%r11, %%rbx\n"
-		      "xorq %%r15, %%r15\n"
-		      "jmp main_loop\n"
-		"failure:\n"
-		      "movq $-1, %%rax\n"
-		      "jmp end\n"
-		"success:\n"
-		      "xorq %%rax, %%rax\n"
-		"end:\n"
+	asm volatile ("movq	%%rcx, %%r10\n"		/* magic */
+		      "movq	%%rdx, %%r11\n"		/* img_x */
+		      "xorq	%%r14, %%r14\n"		/* cmp_total */
+		      "xorq	%%rdx, %%rdx\n"		/* cmp_xpos */
+		"cb_main_loop:\n"
+		      "cmpq	%%r10, %%r14\n"
+		      "jge	cb_failure\n"		/* cmp_total >= magic */
+		      "decq	%%rdi\n"
+		      "jz	cb_end\n"		/* cmp_len-- == 0 */
+		      "xorq	%%rcx, %%rcx\n"		/* cmp_cur */
+		      "movb	(%%rax, %%rdx), %%cl\n"	
+		      "subb	(%%rbx, %%rdx), %%cl\n"	
+		      "jge	cb_positive\n"
+		      "notb	%%cl\n"
+		      "andb	$0x7F, %%cl\n"
+		      "incb	%%cl\n"
+		"cb_positive:\n"
+		      "addq	%%rcx, %%r14\n"		/* r14 += ab(cmp-img) */
+		      "incq	%%rdx\n"		/* cmp_xpos++ */
+		      "cmpq	%%rsi, %%rdx\n" 
+		      "jl	cb_main_loop\n"		/* if cmp_xp > cmp_x */
+		      "addq	%%rsi, %%rax\n"		/* cmp_ptr += cmp_x */
+		      "addq	%%r11, %%rbx\n"		/* img_ptr += img_x */
+		      "xorq	%%rdx, %%rdx\n"		/* cmp_xpos = 0 */
+		      "jmp	cb_main_loop\n"
+		"cb_failure:\n"
+		      "movq	$-1, %%rax\n"
+		"cb_end:\n"
 		      : "=a" (rval)
 		      : "a" (cmp_ptr),
 		        "b" (img_ptr),
@@ -198,7 +185,7 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		        "d" (img_x),
 		        "S" (cmp_x),
 		        "D" (cmp_len)
-		      );
+		      : "r10", "r11", "r14");
 	
 	return rval;
 #else
@@ -243,8 +230,8 @@ int cmp_img (struct img_dt *img, struct img_dt *cmp, int magic)
 
 	int img_xpos = 0;
 	for (i = 0; i < img_len; i++) {
-		if (!cmp_block(cmp->flat, img->flat + i, magic, 
-			       img->x, cmp->x, cmp_len))
+		if (cmp_block(cmp->flat, img->flat + i, magic, 
+			       img->x, cmp->x, cmp_len) >= 0)
 			return i;
 
 		if ((img_xpos++) >= xl) {
