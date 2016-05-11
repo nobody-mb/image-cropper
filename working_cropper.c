@@ -187,7 +187,7 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		        "D" (cmp_len)
 		      : "r10", "r11", "r14");
 	
-	return rval;
+	return rval < 0 ? rval : 0;
 #else
 	int cmp_total = 0;
 	int cmp_xpos = 0;
@@ -537,6 +537,8 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct i
 	for (i = 0; i < num_tls; i++) {
 	
 	if ((tl_pos = cmp_img(&img, &topleft[i], 256)) > 0) {
+		retn = 0;	
+
 		if ((br_pos = cmp_img(&img, &btmright, 256)) > 0) {
 			y0 = (tl_pos / img.x);
 			x0 = (tl_pos % img.x) / img.pixsz;
@@ -562,12 +564,17 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct i
 			retn = crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, 
 					      x0, y0, x1, y1, wpath);
 		} 
+		
+		printf("%s: %d\n", name, retn);
+		
+		if (retn)
+			break;
 	}
 	}
 	
 	free(img.flat);
 	
-	return retn;
+	return !retn;
 }
 
 /* looks for the image "comp" in the .pngs found in "src_path", 
