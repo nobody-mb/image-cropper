@@ -30,7 +30,7 @@ struct queue {
 	int size;
 };
 
-#define X86_64_SUPPORTED __LP64__
+#define X86_64_SUPPORTED //__LP64__
 
 int crop_img (unsigned char *src_ptr, unsigned int src_x, unsigned int src_y, 
 	      char *dst_ptr, unsigned int x0, unsigned int y0, 
@@ -164,9 +164,6 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		      "subb	(%%rbx, %%rdx, 1), %%cl\n"	
 		      "jge	cb_positive\n"
 		      "negb 	%%cl\n"
-		      //"notb	%%cl\n"
-		     // "andb	$0x7F, %%cl\n"
-		    //  "incb	%%cl\n"
 		"cb_positive:\n"
 		      "addq	%%rcx, %%r14\n"		/* r14 += ab(cmp-img) */
 		      "incq	%%rdx\n"		/* cmp_xpos++ */
@@ -647,62 +644,65 @@ int run_crop (const char *src_path, char **tl_paths, int num_tl, const char *br_
 	return 0;
 }
 
-int get_refs (const char *src_path, const char *ext, struct queue *queue)
+int get_ref_array (char ***array, const char *src_path, const char *ext)
 {
+	struct queue que;
+	int extlen;
 	struct dirent *ds;
 	struct stat st;
 	char wpath[1024];
 	DIR *dr;
 	const char *ptr;
-	int extlen = (int)strlen(ext);
 	
-	if ((dr = opendir(src_path)) == NULL)
+	memset(&que, 0, sizeof(struct queue));
+	
+	if (!array || !src_path || !ext || 
+	    (extlen = (int)strlen(ext)) <= 0 ||
+	    (dr = opendir(src_path)) == NULL) {
+		fprintf(stderr, "[%s]: invalid arguments\n", __func__);
 		return -1;
+	}
 	
 	while ((ds = readdir(dr))) {
 		ptr = get_last(ds->d_name, '.');
-		if ((*(ds->d_name) != '.') && ptr && !strncmp(ptr, ext, extlen)) {
-			memset(wpath, 0, sizeof(wpath));
-			snprintf(wpath, sizeof(wpath), "%s/%s", src_path, ds->d_name);
+		if ((*(ds->d_name) == '.') || !ptr || strncmp(ptr, ext, extlen))
+			continue;
 			
-			if (stat(wpath, &st) >= 0 && !S_ISDIR(st.st_mode)) {
-				fprintf(stderr, "found ref file %s\n", ds->d_name);
-				push(queue, wpath);
-				
-			}
-		}
+		memset(wpath, 0, sizeof(wpath));
+		snprintf(wpath, sizeof(wpath), "%s/%s", src_path, ds->d_name);
+			
+		if (stat(wpath, &st) < 0 || S_ISDIR(st.st_mode))
+			continue;
+			
+		fprintf(stderr, "[%s]: found ref file %s\n", __func__, ds->d_name);
+		push(&que, wpath);
 	}
 	
 	closedir(dr);
 	
-	return 0;
+	if ((extlen = que.size) <= 0) { 
+		fprintf(stderr, "[%s]: no files found w/ext %s\n", __func__, ext);
+		return -1;
+	}
+		
+	(*array) = calloc(que.size, sizeof(char *));
+	
+	while (que.size)
+		(*array)[que.size] = pop(&que);
+	
+	return extlen;
 }
-
-
 
 int main (int argc, const char **argv)
 {
 	const char *src = "/Users/nobody1/Desktop/dir";
 	const char *ref = "/Users/nobody1/Desktop/ref";
 	const char *br_path = "/Users/nobody1/Desktop/ref2/btmright.png";
-	char *cur = NULL;
+	char **refs;
+	int rsize;
 	
-	struct queue que;
-	
-	memset(&que, 0, sizeof(struct queue));
-	
-	get_refs(ref, ".png", &que);
-	
-	if (que.size == 0)
+	if ((rsize = get_ref_array(&refs, ref, ".png")) <= 0)
 		return -1;
-		
-	char **refs = calloc(que.size, sizeof(char *));
-	int rsize = que.size;
-	
-	while (que.size) {
-		cur = pop(&que);
-		refs[que.size] = cur;
-	}
 	
 	if (run_crop(src, refs, rsize, br_path) < 0)
 		fprintf(stderr, "crop error\n");
