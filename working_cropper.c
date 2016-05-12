@@ -88,7 +88,7 @@ int crop_and_write (unsigned int img_x, unsigned int img_y, unsigned int bpp,
 	int err = 0;
 	
 	if (crop_img(data, img_x, img_y, cropdata, x0, y0, x1, y1, bpp) < 0)
-		err = -1;
+		err = 0;
 	else 
 		err = stbi_write_png(path, x1 - x0, y1 - y0, bpp, 
 				     cropdata, (x1 - x0) * bpp);
@@ -156,12 +156,13 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		      "xorq	%%rdx, %%rdx\n"		/* cmp_xpos */
 		"cb_main_loop:\n"
 		      "cmpq	%%r10, %%r14\n"
-		      "jge	cb_failure\n"		/* cmp_total >= magic */
+		      "jg	cb_failure\n"		/* cmp_total >= magic */
 		      "decq	%%rdi\n"
-		      "jz	cb_end\n"		/* cmp_len-- == 0 */
+		      "jz	cb_success\n"		/* cmp_len-- == 0 */
 		      "xorq	%%rcx, %%rcx\n"		/* cmp_cur */
-		      "movb	(%%rax, %%rdx), %%cl\n"	
-		      "subb	(%%rbx, %%rdx), %%cl\n"	
+		      "movb	(%%rax, %%rdx, 1), %%cl\n"	
+		      "subb	(%%rbx, %%rdx, 1), %%cl\n"
+		     // "cmpb 	$0, %%cl\n"	
 		      "jge	cb_positive\n"
 		      "notb	%%cl\n"
 		      "andb	$0x7F, %%cl\n"
@@ -175,6 +176,9 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		      "addq	%%r11, %%rbx\n"		/* img_ptr += img_x */
 		      "xorq	%%rdx, %%rdx\n"		/* cmp_xpos = 0 */
 		      "jmp	cb_main_loop\n"
+		"cb_success:\n"
+		      "xorq	%%rax, %%rax\n"
+		      "jmp 	cb_end\n"
 		"cb_failure:\n"
 		      "movq	$-1, %%rax\n"
 		"cb_end:\n"
@@ -257,8 +261,8 @@ int alloc_img_from_file (const char *fname, struct img_dt *ptr, int expect_size)
 
     	stbi_image_free(buffer);
 
-	fprintf(stderr, "alloc image %s (%d x %d) pixsz = %d\n", 
-		fname, ptr->x, ptr->y, ptr->pixsz);
+	fprintf(stderr, "[%s]: alloc image (%d x %d) (pixsz = %d):\n\t%s\n", 
+		__func__, ptr->x, ptr->y, ptr->pixsz, fname);
 		
 	return 0;
 }
@@ -494,10 +498,14 @@ int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x,
 	
 	y0 = (tl_pos / img_x);
 	x0 = (topleft_x + (tl_pos % img_x)) / pixsz;
+	
+	fprintf(stderr, "[%s]: starting at (%d, %d)\n", __func__, x0, y0);
 
 	x1 = find_x_boundary(x0, pixsz, img_x, flat + (y0 * img_x) + (x0 * pixsz), 
 						flat + (y0 * img_x) + (x0 * pixsz));
 	x0 -= (topleft_x / pixsz);
+	
+	fprintf(stderr, "[%s]: found x1 = %d\n", __func__, x1);
 	
 	column_buffer = calloc((img_y - y0 + 1), pixsz);
 
@@ -510,6 +518,8 @@ int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x,
 						flat + (img_y * img_x) + (x0 * pixsz), 
 						img_x, img_y, y0, pixsz);
 	*x1p = x1;
+	
+	fprintf(stderr, "[%s]: found y1 = %d\n", __func__, *y1p);
 	
 	free(column_buffer);
 
@@ -536,7 +546,11 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct i
 	
 	for (i = 0; i < num_tls; i++) {
 	
-	if ((tl_pos = cmp_img(&img, &topleft[i], 256)) > 0) {
+		if ((tl_pos = cmp_img(&img, &topleft[i], 256)) <= 0) {
+			fprintf(stderr, "[%s]: did not find ref #%d\n", __func__, i);
+			continue;
+		}
+		
 		retn = 0;	
 
 		if ((br_pos = cmp_img(&img, &btmright, 256)) > 0) {
@@ -546,8 +560,10 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct i
 			y1 = (br_pos / img.x) + btmright.y;
 			x1 = ((br_pos % img.x) + btmright.x) / img.pixsz;
 			
-			printf("%d -> %d | (%d, %d) -> (%d, %d)\n", tl_pos, br_pos, x0,y0,x1,y1);
-			
+			fprintf(stderr, "[%s]: found br_ref (%d -> %d): "
+					"(%d, %d) -> (%d, %d)\n", 
+				__func__, tl_pos, br_pos, x0, y0, x1, y1);
+	
 			snprintf(wpath, sizeof(wpath), "%sc.png", name);
 			retn = crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, 
 					      x0, y0, x1, y1, wpath);
@@ -558,23 +574,29 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct i
 			detect_br(&x1, &y1, topleft[i].x, img.x, img.y, img.pixsz, tl_pos, img.flat);
 			
 						
-			printf("******** (%d, %d) -> (%d, %d)\n", x0, y0, x1, y1);
+			fprintf(stderr, "[%s]: detected br (%d): "
+					"(%d, %d) -> (%d, %d)\n", 
+				__func__, tl_pos, x0, y0, x1, y1);
 			
 			snprintf(wpath, sizeof(wpath), "%sc.png", name);
 			retn = crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, 
 					      x0, y0, x1, y1, wpath);
 		} 
 		
-		printf("%s: %d\n", name, retn);
-		
-		if (retn)
+		if (retn) {
+			fprintf(stderr, "[%s]: success (retn %d): (%s)\n", 
+				__func__, retn, name);
+			retn = 0;
 			break;
-	}
+		}
+		
+		fprintf(stderr, "[%s]: could not process %s\n", 
+				__func__, name);
 	}
 	
 	free(img.flat);
 	
-	return !retn;
+	return retn;
 }
 
 /* looks for the image "comp" in the .pngs found in "src_path", 
