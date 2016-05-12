@@ -161,12 +161,12 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		      "jz	cb_success\n"		/* cmp_len-- == 0 */
 		      "xorq	%%rcx, %%rcx\n"		/* cmp_cur */
 		      "movb	(%%rax, %%rdx, 1), %%cl\n"	
-		      "subb	(%%rbx, %%rdx, 1), %%cl\n"
-		     // "cmpb 	$0, %%cl\n"	
+		      "subb	(%%rbx, %%rdx, 1), %%cl\n"	
 		      "jge	cb_positive\n"
-		      "notb	%%cl\n"
-		      "andb	$0x7F, %%cl\n"
-		      "incb	%%cl\n"
+		      "negb 	%%cl\n"
+		      //"notb	%%cl\n"
+		     // "andb	$0x7F, %%cl\n"
+		    //  "incb	%%cl\n"
 		"cb_positive:\n"
 		      "addq	%%rcx, %%r14\n"		/* r14 += ab(cmp-img) */
 		      "incq	%%rdx\n"		/* cmp_xpos++ */
