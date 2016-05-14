@@ -59,7 +59,7 @@ int crop_img (unsigned char *src_ptr, unsigned int src_x, unsigned int src_y,
 		      "decl %%ecx\n"
 		      "jnz rows_loop\n"
 		      : : "D" (dst_ptr), "S" (src_ptr), "a" (x0), "b" (x1), 
-		      "c" (y1 - y0), "d" (x0 + src_x - x1): "bl");
+		      "c" (y1 - y0), "d" (x0 + src_x - x1));
 #else
 	int dst_xpos = x0;
 	int rows_left = y1 - y0;
@@ -357,7 +357,7 @@ int find_most_common (int y1, int pixsz, int img_y, unsigned char *column_buffer
 				"b" (num),
 				"c" (pixsz),
 				"S" (column_buffer)
-			: "rax", "r8", "r9", "r10", "r11", "r13", 
+			: "r8", "r9", "r10", "r11", "r13", 
 				"r14", "r15", "rdi", "rdx");
 	
 	return max;
@@ -560,10 +560,6 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct i
 			fprintf(stderr, "[%s]: found br_ref (%d -> %d): "
 					"(%d, %d) -> (%d, %d)\n", 
 				__func__, tl_pos, br_pos, x0, y0, x1, y1);
-	
-			snprintf(wpath, sizeof(wpath), "%sc.png", name);
-			retn = crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, 
-					      x0, y0, x1, y1, wpath);
 		} else {
 			y1 = y0 = (tl_pos / img.x);
 			x0 = (tl_pos % img.x) / img.pixsz;
@@ -573,12 +569,12 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct i
 						
 			fprintf(stderr, "[%s]: detected br (%d): "
 					"(%d, %d) -> (%d, %d)\n", 
-				__func__, tl_pos, x0, y0, x1, y1);
-			
-			snprintf(wpath, sizeof(wpath), "%sc.png", name);
-			retn = crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, 
-					      x0, y0, x1, y1, wpath);
+				__func__, tl_pos, x0, y0, x1, y1);			
 		} 
+		
+		snprintf(wpath, sizeof(wpath), "%sc.png", name);
+		retn = crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, 
+					      x0, y0, x1, y1, wpath);
 		
 		if (retn) {
 			fprintf(stderr, "[%s]: success (retn %d): (%s)\n", 
@@ -693,6 +689,14 @@ int get_ref_array (char ***array, const char *src_path, const char *ext)
 	return extlen;
 }
 
+void free_ref_array (char **refs, int rsize)
+{
+	while (--rsize >= 0)
+		free(refs[rsize]);
+		
+	free(refs);
+}
+
 int main (int argc, const char **argv)
 {
 	const char *src = "/Users/nobody1/Desktop/dir";
@@ -706,14 +710,8 @@ int main (int argc, const char **argv)
 	
 	if (run_crop(src, refs, rsize, br_path) < 0)
 		fprintf(stderr, "crop error\n");
-	
-	int i;
-	for (i = 0; i < rsize; i++) {
-		printf("%s\n", refs[i]);
-		free(refs[i]);
-	}
-	
-	free(refs);
+		
+	free_ref_array(refs, rsize);
 
 	return 0;
 }
