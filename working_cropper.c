@@ -684,7 +684,7 @@ int get_ref_array (char ***array, const char *src_path, const char *ext)
 	(*array) = calloc(que.size, sizeof(char *));
 	
 	while (que.size)
-		(*array)[que.size] = pop(&que);
+		(*array)[que.size - 1] = pop(&que);
 	
 	return extlen;
 }
