@@ -6,9 +6,12 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <time.h>
+#include <sys/time.h>
 #include <stdint.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
@@ -17,6 +20,17 @@ struct img_dt {
 	unsigned char **img;
 	unsigned char *flat;
 };
+
+//#define X86_64_SUPPORTED //__LP64__
+#define MAGIC 2
+#define X86_64_SUPPORTED1
+
+/****************************************************************************************/
+/****************************************************************************************/
+
+#ifdef FNS_UTIL
+{
+#endif
 
 struct node {
 	char *item;
@@ -30,7 +44,76 @@ struct queue {
 	int size;
 };
 
-#define X86_64_SUPPORTED //__LP64__
+const char *get_last (const char *dir, unsigned char cmp)
+{
+	const char *start = dir;
+	
+	while (*dir)
+		dir++;
+	
+	while (dir >= start && *dir != cmp)
+		dir--;
+	
+	return (dir == start) ? NULL : dir;
+}
+
+void push (struct queue *queue, const char *src) 
+{
+	struct node *n = calloc(sizeof(struct node), 1);
+	
+	n->item = strdup(src);
+	n->next = NULL;
+	
+	if (queue->head == NULL)
+		queue->head = n;
+	else
+		queue->tail->next = n;
+	
+	queue->tail = n;
+	queue->size++;
+}
+char *pop (struct queue *queue) 
+{
+	struct node *head = queue->head;
+	char *item = NULL;
+	
+	if (queue->size <= 0)
+		return item;
+	
+	item = head->item;
+	
+	queue->head = head->next;
+	queue->size--;
+	
+	free(head);
+	
+	return item;
+}
+
+int alloc_img_from_file (const char *fname, struct img_dt *ptr, int expect_size)
+{
+	unsigned char *buffer = stbi_load(fname, &ptr->x, &ptr->y, &ptr->pixsz, 0);
+	
+	if (!buffer)
+		return -1;
+	
+	ptr->x *= ptr->pixsz;
+	
+	ptr->flat = malloc(ptr->y * ptr->x);
+	memcpy(ptr->flat, buffer, ptr->y * ptr->x);
+
+    	stbi_image_free(buffer);
+
+	fprintf(stderr, "[%s]: alloc image (%d x %d) (pixsz = %d):\n\t%s\n", 
+		__func__, ptr->x, ptr->y, ptr->pixsz, fname);
+		
+	return 0;
+}
+
+#ifdef FNS_UTIL
+}
+#endif
+
 
 int crop_img (unsigned char *src_ptr, unsigned int src_x, unsigned int src_y, 
 	      char *dst_ptr, unsigned int x0, unsigned int y0, 
@@ -43,7 +126,7 @@ int crop_img (unsigned char *src_ptr, unsigned int src_x, unsigned int src_y,
 	
 	src_ptr += (y0 * src_x) + x0;
 	
-#ifdef X86_64_SUPPORTED
+#ifdef X86_64_SUPPORTED1
 	asm volatile ("movl %%ebx, %%r8d\n"	/* x1 */
 		      "movl %%eax, %%r9d\n"	/* dst_xpos */
 		      
@@ -99,56 +182,10 @@ int crop_and_write (unsigned int img_x, unsigned int img_y, unsigned int bpp,
 }
 
 
-const char *get_last (const char *dir, unsigned char cmp)
-{
-	const char *start = dir;
-	
-	while (*dir)
-		dir++;
-	
-	while (dir >= start && *dir != cmp)
-		dir--;
-	
-	return (dir == start) ? NULL : dir;
-}
-
-void push (struct queue *queue, const char *src) 
-{
-	struct node *n = calloc(sizeof(struct node), 1);
-	
-	n->item = strdup(src);
-	n->next = NULL;
-	
-	if (queue->head == NULL)
-		queue->head = n;
-	else
-		queue->tail->next = n;
-	
-	queue->tail = n;
-	queue->size++;
-}
-char *pop (struct queue *queue) 
-{
-	struct node *head = queue->head;
-	char *item = NULL;
-	
-	if (queue->size <= 0)
-		return item;
-	
-	item = head->item;
-	
-	queue->head = head->next;
-	queue->size--;
-	
-	free(head);
-	
-	return item;
-}
-
 int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 	       int img_x, int cmp_x, int cmp_len)
 {
-#ifdef X86_64_SUPPORTED
+#ifdef X86_64_SUPPORTED1
 	int rval = 0;
 	asm volatile ("movq	%%rcx, %%r10\n"		/* magic */
 		      "movq	%%rdx, %%r11\n"		/* img_x */
@@ -244,27 +281,10 @@ int cmp_img (struct img_dt *img, struct img_dt *cmp, int magic)
 	return -1;
 }	
 
-int alloc_img_from_file (const char *fname, struct img_dt *ptr, int expect_size)
-{
-	unsigned char *buffer = stbi_load(fname, &ptr->x, &ptr->y, &ptr->pixsz, 0);
-	
-	if (!buffer)
-		return -1;
-	
-	ptr->x *= ptr->pixsz;
-	
-	ptr->flat = malloc(ptr->y * ptr->x);
-	memcpy(ptr->flat, buffer, ptr->y * ptr->x);
 
-    	stbi_image_free(buffer);
+#define THRESHOLD 32
 
-	fprintf(stderr, "[%s]: alloc image (%d x %d) (pixsz = %d):\n\t%s\n", 
-		__func__, ptr->x, ptr->y, ptr->pixsz, fname);
-		
-	return 0;
-}
-
-int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr, unsigned char *cmp_start)
+int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr)
 {
 #ifdef X86_64_SUPPORTED
 	asm volatile (	"imulq %%rbx, %%rax\n"
@@ -282,15 +302,18 @@ int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr, unsig
 		"fxb_endloop:\n" 
 			: "=a" (x1)
 			: "a" (x1), "b" (pixsz), "c" (img_x),
-				"S" (cmp_start), "D" (cmp_ptr)
+				"S" (cmp_ptr), "D" (cmp_ptr)
 				: "rdx");
 #else
 	int i;
+	unsigned char *cmp_start = cmp_ptr;
 	
 	for (x1 *= pixsz; x1 < img_x; x1 += pixsz) {
-		for (i = 0; i < pixsz; i++)
-			if (cmp_ptr[i] != cmp_start[i]) 
+		for (i = 0; i < pixsz; i++) {
+			int tmp = (cmp_ptr[i] - cmp_start[i]);
+			if (tmp > THRESHOLD || tmp < (-1 * THRESHOLD))
 				break;
+		}
 		
 		if (i < pixsz)
 			break;
@@ -304,7 +327,7 @@ int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr, unsig
 
 int find_most_common (int y1, int pixsz, int img_y, unsigned char *column_buffer)
 {
-#ifdef X86_64_SUPPORTED
+#ifdef X86_64_SUPPORTED 
 	int max = 0;
 	int num = (img_y - y1);
 	
@@ -400,7 +423,7 @@ int find_most_common (int y1, int pixsz, int img_y, unsigned char *column_buffer
 int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x, 
 			int img_y, int y1, int pixsz)
 {
-#ifdef X86_64_SUPPORTED
+#ifdef X86_64_SUPPORTED1
 	int retn = 0;
 
 	asm volatile ("movq %%rax, %%r8\n"		/* y1 */
@@ -460,7 +483,7 @@ int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x,
 void build_col_buffer (int y1, int img_x, int img_y, int pixsz, 
 			unsigned char *column_ptr, unsigned char *cmp_ptr)
 {
-#ifdef X86_64_SUPPORTED
+#ifdef X86_64_SUPPORTED1
 	asm volatile (  "subq %%rcx, %%rax\n"
 			"subq %%rdx, %%rbx\n"
 		"bcb_loop:\n"
@@ -487,34 +510,34 @@ void build_col_buffer (int y1, int img_x, int img_y, int pixsz,
 int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x, 
 	       int img_y, int pixsz, int tl_pos, unsigned char *flat)
 {
-	unsigned char *column_buffer;
-	int x0, y0, x1, max = 0;
-	
+	unsigned char *column_buffer, *tmp;
+	int x0, y0, x1, x0p, max = 0;
+
 	if (!x1p || !y1p)
 		return -1;
 	
+	x0p = ((tl_pos % img_x));
 	y0 = (tl_pos / img_x);
-	x0 = (topleft_x + (tl_pos % img_x)) / pixsz;
+	x0 = x0p / pixsz;
+	tmp = flat + tl_pos + x0p; 
 	
 	fprintf(stderr, "[%s]: starting at (%d, %d)\n", __func__, x0, y0);
 
-	x1 = find_x_boundary(x0, pixsz, img_x, flat + (y0 * img_x) + (x0 * pixsz), 
-						flat + (y0 * img_x) + (x0 * pixsz));
-	x0 -= (topleft_x / pixsz);
-	
-	fprintf(stderr, "[%s]: found x1 = %d\n", __func__, x1);
+	*x1p = find_x_boundary(x0 + (topleft_x / pixsz), pixsz, img_x, flat + tl_pos + topleft_x);
+
+	fprintf(stderr, "[%s]: found x1 = %d\n", __func__, *x1p);
 	
 	column_buffer = calloc((img_y - y0 + 1), pixsz);
-
-	build_col_buffer (y0, img_x, img_y, pixsz, column_buffer, 
-						flat + (img_x * y0) + (x0 * pixsz));
+	build_col_buffer(y0, img_x, img_y, pixsz, column_buffer, tmp);
 	
 	max = find_most_common(y0, pixsz, img_y, column_buffer);
-
-	*y1p = find_last_mc(column_buffer + (max * pixsz), 
-						flat + (img_y * img_x) + (x0 * pixsz), 
-						img_x, img_y, y0, pixsz);
-	*x1p = x1;
+	
+	tmp = column_buffer + (max * pixsz);
+	
+	fprintf(stderr, "[%s]: most common at %d: #%.02X%.02X%.02X\n", __func__, max, 
+		tmp[0], tmp[1], tmp[2]);
+		 
+	*y1p = find_last_mc(tmp, flat + (img_y * img_x) + (x0p), img_x, img_y, y0, pixsz);
 	
 	fprintf(stderr, "[%s]: found y1 = %d\n", __func__, *y1p);
 	
@@ -539,18 +562,23 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct i
 	int tl_pos = 0, br_pos = 0;
 	unsigned int x0, y0, x1, y1;
 	
-	int i;
+	int i, magic_total;
+
 	
 	for (i = 0; i < num_tls; i++) {
 	
-		if ((tl_pos = cmp_img(&img, &topleft[i], 256)) <= 0) {
+		magic_total = MAGIC * (topleft[i].x);// * topleft[i].y;
+		
+		printf("magic = %d\n", magic_total);
+	
+		if ((tl_pos = cmp_img(&img, &topleft[i], magic_total)) <= 0) {
 			fprintf(stderr, "[%s]: did not find ref #%d\n", __func__, i);
 			continue;
 		}
 		
 		retn = 0;	
 
-		if ((br_pos = cmp_img(&img, &btmright, 256)) > 0) {
+		/*if ((br_pos = cmp_img(&img, &btmright, MAGIC)) > 0) {
 			y0 = (tl_pos / img.x);
 			x0 = (tl_pos % img.x) / img.pixsz;
 			
@@ -560,7 +588,7 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct i
 			fprintf(stderr, "[%s]: found br_ref (%d -> %d): "
 					"(%d, %d) -> (%d, %d)\n", 
 				__func__, tl_pos, br_pos, x0, y0, x1, y1);
-		} else {
+		} else {*/
 			y1 = y0 = (tl_pos / img.x);
 			x0 = (tl_pos % img.x) / img.pixsz;
 
@@ -570,7 +598,7 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct i
 			fprintf(stderr, "[%s]: detected br (%d): "
 					"(%d, %d) -> (%d, %d)\n", 
 				__func__, tl_pos, x0, y0, x1, y1);			
-		} 
+		//} 
 		
 		snprintf(wpath, sizeof(wpath), "%sc.png", name);
 		retn = crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, 
@@ -607,15 +635,22 @@ int run_crop (const char *src_path, char **tl_paths, int num_tl, const char *br_
 	topleft = calloc(sizeof(struct img_dt), num_tl);
 	memset(&btmright, 0, sizeof(struct img_dt));
 	
-	for (i = 0; i < num_tl; i++)
-		if (alloc_img_from_file(tl_paths[i], &topleft[i], 0))
+	for (i = 0; i < num_tl; i++) {
+		if (alloc_img_from_file(tl_paths[i], &topleft[i], 0)) {
+			fprintf(stderr, "[%s]: couldnt open %s\n", __func__, tl_paths[i]);
 			return -1;
+		}
+	}
 			
-	if (alloc_img_from_file(br_path, &btmright, 0))
+	if (alloc_img_from_file(br_path, &btmright, 0)) {
+		fprintf(stderr, "[%s]: couldnt open %s\n", __func__, br_path);
 		return -1;
+	}
 
-	if ((dr = opendir(src_path)) == NULL)
+	if ((dr = opendir(src_path)) == NULL) {
+		fprintf(stderr, "[%s]: couldnt open %s\n", __func__, src_path);
 		return -1;
+	}
 	
 	while ((ds = readdir(dr))) {
 		if (*(ds->d_name) != '.') {
@@ -640,6 +675,20 @@ int run_crop (const char *src_path, char **tl_paths, int num_tl, const char *br_
 	return 0;
 }
 
+#include <mach/mach.h>
+#include <mach/clock.h>
+long getTime()
+	{
+
+		clock_serv_t clock;
+		mach_timespec_t mts;
+		host_get_clock_service(mach_host_self(), CALENDAR_CLOCK, &clock);
+		clock_get_time(clock, &mts);
+		mach_port_deallocate(mach_task_self(), clock);
+		return mts.tv_nsec;
+
+	}//41398000
+	
 int get_ref_array (char ***array, const char *src_path, const char *ext)
 {
 	struct queue que;
@@ -683,8 +732,10 @@ int get_ref_array (char ***array, const char *src_path, const char *ext)
 		
 	(*array) = calloc(que.size, sizeof(char *));
 	
-	while (que.size)
-		(*array)[que.size - 1] = pop(&que);
+	while (que.size) {
+		ptr = pop(&que);
+		(*array)[que.size] = (char *)ptr;
+	}
 	
 	return extlen;
 }
@@ -699,6 +750,7 @@ void free_ref_array (char **refs, int rsize)
 
 int main (int argc, const char **argv)
 {
+	
 	const char *src = "/Users/nobody1/Desktop/dir";
 	const char *ref = "/Users/nobody1/Desktop/ref";
 	const char *br_path = "/Users/nobody1/Desktop/ref2/btmright.png";
@@ -707,9 +759,12 @@ int main (int argc, const char **argv)
 	
 	if ((rsize = get_ref_array(&refs, ref, ".png")) <= 0)
 		return -1;
-	
+	//unsigned long start = getTime();
 	if (run_crop(src, refs, rsize, br_path) < 0)
 		fprintf(stderr, "crop error\n");
+	//unsigned long end = getTime();
+	
+	//printf("%lu\n", end - start);
 		
 	free_ref_array(refs, rsize);
 
