@@ -15,14 +15,12 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-struct img_dt {
-	int x, y, pixsz;
-	unsigned char **img;
-	unsigned char *flat;
-};
-
-//#define X86_64_SUPPORTED //__LP64__
-#define MAGIC 2
+#define SRC_PATH 	"/Users/nobody1/Desktop/dir"
+#define REF_PATH 	"/Users/nobody1/Desktop/ref"
+#define BR_PATH 	"/Users/nobody1/Desktop/ref2/btmright.png"
+#define EXTENSION 	".png"
+#define MAGIC 		2
+#define THRESHOLD 	32
 #define X86_64_SUPPORTED1
 
 /****************************************************************************************/
@@ -31,6 +29,12 @@ struct img_dt {
 #ifdef FNS_UTIL
 {
 #endif
+
+struct img_dt {
+	int x, y, pixsz;
+	unsigned char **img;
+	unsigned char *flat;
+};
 
 struct node {
 	char *item;
@@ -104,17 +108,29 @@ int alloc_img_from_file (const char *fname, struct img_dt *ptr, int expect_size)
 
     	stbi_image_free(buffer);
 
-	fprintf(stderr, "[%s]: alloc image (%d x %d) (pixsz = %d):\n\t%s\n", 
+	fprintf(stderr, "\t[%s]: alloc image (%d x %d) (pixsz = %d):\n\t\t%s\n", 
 		__func__, ptr->x, ptr->y, ptr->pixsz, fname);
 		
 	return 0;
+}
+
+#include <mach/mach.h>
+#include <mach/clock.h>
+long getTime (void)
+{
+	clock_serv_t clock;
+	mach_timespec_t mts;
+	host_get_clock_service(mach_host_self(), CALENDAR_CLOCK, &clock);
+	clock_get_time(clock, &mts);
+	mach_port_deallocate(mach_task_self(), clock);
+	return mts.tv_nsec;
 }
 
 #ifdef FNS_UTIL
 }
 #endif
 
-
+/* crops flat image from src_ptr -> dst_ptr */
 int crop_img (unsigned char *src_ptr, unsigned int src_x, unsigned int src_y, 
 	      char *dst_ptr, unsigned int x0, unsigned int y0, 
 	      unsigned int x1, unsigned int y1, unsigned int bpp)
@@ -162,7 +178,7 @@ int crop_img (unsigned char *src_ptr, unsigned int src_x, unsigned int src_y,
 	
 }
 
-
+/* crops data and writes to path */
 int crop_and_write (unsigned int img_x, unsigned int img_y, unsigned int bpp, 
 		    unsigned char *data, unsigned int x0, unsigned int y0, 
 		    unsigned int x1, unsigned int y1, char *path)
@@ -181,7 +197,7 @@ int crop_and_write (unsigned int img_x, unsigned int img_y, unsigned int bpp,
 	return err;
 }
 
-
+/* block compare */
 int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 	       int img_x, int cmp_x, int cmp_len)
 {
@@ -197,8 +213,8 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 		      "decq	%%rdi\n"
 		      "jz	cb_success\n"		/* cmp_len-- == 0 */
 		      "xorq	%%rcx, %%rcx\n"		/* cmp_cur */
-		      "movb	(%%rax, %%rdx, 1), %%cl\n"	
-		      "subb	(%%rbx, %%rdx, 1), %%cl\n"	
+		      "movb	(%%rax, %%rdx), %%cl\n"	
+		      "subb	(%%rbx, %%rdx), %%cl\n"	
 		      "jge	cb_positive\n"
 		      "negb 	%%cl\n"
 		"cb_positive:\n"
@@ -257,6 +273,7 @@ int cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 #endif
 }
 
+/* searches for cmp in img, returns position if found, -1 if not */
 int cmp_img (struct img_dt *img, struct img_dt *cmp, int magic)
 {
 	int i;
@@ -281,149 +298,11 @@ int cmp_img (struct img_dt *img, struct img_dt *cmp, int magic)
 	return -1;
 }	
 
-
-#define THRESHOLD 32
-
-int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr)
-{
-#ifdef X86_64_SUPPORTED
-	asm volatile (	"imulq %%rbx, %%rax\n"
-			"movq %%rcx, %%rdx\n"	/* img_x */
-		"fxb_loop1:\n" 
-			"cmpq %%rax, %%rdx\n"
-			"jl fxb_endloop\n"
-			"movq %%rbx, %%rcx\n"
-			"cld\n"
-			"repe cmpsb\n"
-			"jnz fxb_endloop\n"
-			"subq %%rbx, %%rsi\n"
-			"addq %%rbx, %%rax\n"
-			"jmp fxb_loop1\n"
-		"fxb_endloop:\n" 
-			: "=a" (x1)
-			: "a" (x1), "b" (pixsz), "c" (img_x),
-				"S" (cmp_ptr), "D" (cmp_ptr)
-				: "rdx");
-#else
-	int i;
-	unsigned char *cmp_start = cmp_ptr;
-	
-	for (x1 *= pixsz; x1 < img_x; x1 += pixsz) {
-		for (i = 0; i < pixsz; i++) {
-			int tmp = (cmp_ptr[i] - cmp_start[i]);
-			if (tmp > THRESHOLD || tmp < (-1 * THRESHOLD))
-				break;
-		}
-		
-		if (i < pixsz)
-			break;
-		
-		cmp_ptr += pixsz;
-	}
-#endif
-
-	return x1 / pixsz;
-}
-
-int find_most_common (int y1, int pixsz, int img_y, unsigned char *column_buffer)
-{
-#ifdef X86_64_SUPPORTED 
-	int max = 0;
-	int num = (img_y - y1);
-	
-	asm volatile (		"movq %%rcx, %%r10\n"		/* pixsz */
-				"xorq %%r11, %%r11\n"		/* max */
-				"movq %%rsi, %%rdi\n"		/* cmp_ptr */
-				"xorq %%r13, %%r13\n"		/* i */
-				"xorq %%r15, %%r15\n"		/* num  */
-				"xorq %%r8, %%r8\n"		/* max_pos */
-			"fmc_mainloop:\n"
-				"cmpq %%r13, %%rbx\n"	/* i, num */
-				"jl fmc_endloop\n"
-				"xorq %%rax, %%rax\n"	/* tmp_pos = 0 */
-				"movq %%rbx, %%r15\n"	/* num1 = num */
-				"movq %%rsi, %%rdi\n"	/* cmp_ptr = cmp_start */
-				"imulq %%r10, %%r15\n"	/* num1 *= pixsz */
-				"addq %%rcx, %%rdi\n"	/* cmp_ptr += num1 */
-				"movq %%rbx, %%r15\n"	/* num1 = num */
-			"fmc_numloop:\n"
-				"decq %%r15\n"		/* num1-- */
-				"jz fmc_numend\n"
-				"subq %%r10, %%rdi\n"	/* cmp_ptr -= pixsz */
-				"xorq %%r14, %%r14\n"	/* j = 0 */
-			"fmc_pixloop:\n"
-				"cmpq %%r14, %%r10\n"	/* j, pixsz */
-				"jle fmc_pixend\n"
-				"movb (%%rsi, %%r14), %%cl\n"	
-				"movb (%%rdi, %%r14), %%dl\n"
-				"cmpb %%cl, %%dl\n"	/* cmpptr[j] == cmpstart[j] */
-				"jne fmc_pixend\n"
-				"incq %%r14\n"		/* ++j */
-				"jmp fmc_pixloop\n"
-			"fmc_pixend:\n"	
-				"cmpq %%r14, %%r10\n"	/* j == pixsz */
-				"jne fmc_numloop\n"
-				"incq %%rax\n"		/* ++tmp_pos */
-				"jmp fmc_numloop\n"
-			"fmc_numend:\n"
-				"cmpq %%rax, %%r8\n"	/* tmp_pos, max_pos */
-				"jg fmc_not_found\n"
-				"movq %%r13, %%r11\n"	/* max = i */
-				"movq %%rax, %%r8\n"	/* max_pos = tmp_pos */
-			"fmc_not_found:\n"
-				"addq %%r10, %%rsi\n"	/* cmp_start += pixsz */
-				"incq %%r13\n"		/* i++ */
-				"jmp fmc_mainloop\n"
-			"fmc_endloop:\n"	
-				"movq %%r11, %%rax\n"	/* max = max */
-			: "=a" (max) : 
-				"b" (num),
-				"c" (pixsz),
-				"S" (column_buffer)
-			: "r8", "r9", "r10", "r11", "r13", 
-				"r14", "r15", "rdi", "rdx");
-	
-	return max;
-#else
-	int i, j;
-	int max = 0;
-	int tmp_pos = 0;
-	int max_pos = 0;
-	int num = 0;
-	unsigned char *cmp_ptr;
-	unsigned char *cmp_start = column_buffer; 
-	
-	for (i = 0; i < img_y - y1; i++) {
-		tmp_pos = 0;
-		num = img_y - y1;
-		
-		cmp_ptr = column_buffer + (num * pixsz);
-		while (--num) {
-			cmp_ptr -= pixsz;
-			for (j = 0; j < pixsz; j++)
-				if (cmp_ptr[j] != cmp_start[j])
-					break;
-			
-			if (j == pixsz)
-				++tmp_pos;				
-		}
-
-		if (tmp_pos >= max_pos) {
-			max = i;
-			max_pos = tmp_pos;
-		}
-		
-		cmp_start += pixsz;
-	}
-	
-	return max;
-#endif
-}
-
+/* find last instance of cmp_ptr[pixsz] in cmp_start */
 int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x, 
 			int img_y, int y1, int pixsz)
 {
-#ifdef X86_64_SUPPORTED1
+#ifdef X86_64_SUPPORTED11
 	int retn = 0;
 
 	asm volatile ("movq %%rax, %%r8\n"		/* y1 */
@@ -480,6 +359,7 @@ int find_last_mc (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x,
 #endif
 }
 
+/* copy a column from a flat array into a row */
 void build_col_buffer (int y1, int img_x, int img_y, int pixsz, 
 			unsigned char *column_ptr, unsigned char *cmp_ptr)
 {
@@ -507,11 +387,142 @@ void build_col_buffer (int y1, int img_x, int img_y, int pixsz,
 #endif
 }
 
+int find_x_boundary (int x1, int pixsz, int img_x, unsigned char *cmp_ptr)
+{
+#ifdef X86_64_SUPPORTED
+	asm volatile (	"imulq %%rbx, %%rax\n"
+			"movq %%rcx, %%rdx\n"	/* img_x */
+		"fxb_loop1:\n" 
+			"cmpq %%rax, %%rdx\n"
+			"jl fxb_endloop\n"
+			"movq %%rbx, %%rcx\n"
+			"cld\n"
+			"repe cmpsb\n"
+			"jnz fxb_endloop\n"
+			"subq %%rbx, %%rsi\n"
+			"addq %%rbx, %%rax\n"
+			"jmp fxb_loop1\n"
+		"fxb_endloop:\n" 
+			: "=a" (x1)
+			: "a" (x1), "b" (pixsz), "c" (img_x),
+				"S" (cmp_ptr), "D" (cmp_ptr)
+				: "rdx");
+#else
+	int i;
+	unsigned char *cmp_start = cmp_ptr;
+	
+	for (x1 *= pixsz; x1 < img_x; x1 += pixsz) {
+		for (i = 0; i < pixsz; i++) {
+			int tmp = (cmp_ptr[i] - cmp_start[i]);
+			if (tmp > THRESHOLD || tmp < (-1 * THRESHOLD))
+				break;
+		}
+		
+		if (i < pixsz)
+			break;
+		
+		cmp_ptr += pixsz;
+	}
+#endif
+
+	return x1 / pixsz;
+}
+
+int find_most_common (int y1, int pixsz, int img_y, unsigned char *column_buffer)
+{
+	int max = 0;
+	int num = (img_y -= y1);
+	
+#ifdef X86_64_SUPPORTED1
+	asm volatile (		"movq %%rcx, %%r10\n"		/* pixsz */
+				"xorq %%r11, %%r11\n"		/* max */
+				"movq %%rsi, %%rdi\n"		/* cmp_ptr */
+				"xorq %%r13, %%r13\n"		/* i */
+				"xorq %%r15, %%r15\n"		/* num  */
+				"xorq %%r8, %%r8\n"		/* max_pos */
+			"fmc_mainloop:\n"
+				"cmpq %%r13, %%rbx\n"	/* i, num */
+				"jge fmc_endloop\n"
+				"xorq %%rax, %%rax\n"	/* tmp_pos = 0 */
+				"movq %%rbx, %%r15\n"	/* num1 = num */
+				"movq %%rsi, %%rdi\n"	/* cmp_ptr = cmp_start */
+				"imulq %%r10, %%r15\n"	/* num1 *= pixsz */
+				"addq %%rcx, %%rdi\n"	/* cmp_ptr += num1 */
+				"movq %%rbx, %%r15\n"	/* num1 = num */
+			"fmc_numloop:\n"
+				"decq %%r15\n"		/* num1-- */
+				"jz fmc_numend\n"
+				"subq %%r10, %%rdi\n"	/* cmp_ptr -= pixsz */
+				"xorq %%r14, %%r14\n"	/* j = 0 */
+			"fmc_pixloop:\n"
+				"cmpq %%r14, %%r10\n"	/* j, pixsz */
+				"jge fmc_pixend\n"
+				"movb (%%rsi, %%r14), %%cl\n"	
+				"movb (%%rdi, %%r14), %%dl\n"
+				"cmpb %%cl, %%dl\n"	/* cmpptr[j] == cmpstart[j] */
+				"jne fmc_pixend\n"
+				"incq %%r14\n"		/* ++j */
+				"jmp fmc_pixloop\n"
+			"fmc_pixend:\n"	
+				"cmpq %%r14, %%r10\n"	/* j == pixsz */
+				"jne fmc_numloop\n"
+				"incq %%rax\n"		/* ++tmp_pos */
+				"jmp fmc_numloop\n"
+			"fmc_numend:\n"
+				"cmpq %%rax, %%r8\n"	/* tmp_pos, max_pos */
+				"jg fmc_not_found\n"
+				"movq %%r13, %%r11\n"	/* max = i */
+				"movq %%rax, %%r8\n"	/* max_pos = tmp_pos */
+			"fmc_not_found:\n"
+				"addq %%r10, %%rsi\n"	/* cmp_start += pixsz */
+				"incq %%r13\n"		/* i++ */
+				"jmp fmc_mainloop\n"
+			"fmc_endloop:\n"	
+				"movq %%r11, %%rax\n"	/* max = max */
+			: "=a" (max) : 
+				"b" (num),
+				"c" (pixsz),
+				"S" (column_buffer)
+			: "r8", "r9", "r10", "r11", "r13", 
+				"r14", "r15", "rdi", "rdx");
+#else
+	int i, j, tmp_pos = 0, max_pos = 0;
+	unsigned char *cmp_ptr, *cmp_start = column_buffer; 
+	
+	for (i = 0; i < img_y; i++) {
+		tmp_pos = 0;
+		num = img_y;
+		
+		cmp_ptr = column_buffer + (num * pixsz);
+		while (--num) {
+			cmp_ptr -= pixsz;
+			for (j = 0; j < pixsz; j++)
+				if (cmp_ptr[j] != cmp_start[j])
+					break;
+			
+			if (j == pixsz)
+				++tmp_pos;				
+		}
+
+		if (tmp_pos >= max_pos) {
+			max = i;
+			max_pos = tmp_pos;
+		}
+		
+		cmp_start += pixsz;
+	}
+#endif
+
+	return max;
+}
+
+/* attempts to detect location of the "opposite" corner from the window at tl_pos */
 int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x, 
 	       int img_y, int pixsz, int tl_pos, unsigned char *flat)
 {
-	unsigned char *column_buffer, *tmp;
-	int x0, y0, x1, x0p, max = 0;
+	unsigned char column_buffer[img_y * pixsz + 1], *tmp;
+	int x0, y0, x0p, max = 0;
+	unsigned long start, end;
 
 	if (!x1p || !y1p)
 		return -1;
@@ -521,64 +532,57 @@ int detect_br (unsigned int *x1p, unsigned int *y1p, int topleft_x, int img_x,
 	x0 = x0p / pixsz;
 	tmp = flat + tl_pos + x0p; 
 	
-	fprintf(stderr, "[%s]: starting at (%d, %d)\n", __func__, x0, y0);
+	fprintf(stderr, "\t[%s]: starting at (%d, %d)\n", __func__, x0, y0);
 
-	*x1p = find_x_boundary(x0 + (topleft_x / pixsz), pixsz, img_x, flat + tl_pos + topleft_x);
-
-	fprintf(stderr, "[%s]: found x1 = %d\n", __func__, *x1p);
+	start = getTime();
+	*x1p = find_x_boundary(x0 + (topleft_x / pixsz), pixsz, 
+				img_x, flat + tl_pos + topleft_x);
+	end = getTime();
+	fprintf(stderr, "\t[%s]: found x1 = %d (%ld)\n", __func__, *x1p, (end - start));
 	
-	column_buffer = calloc((img_y - y0 + 1), pixsz);
-	build_col_buffer(y0, img_x, img_y, pixsz, column_buffer, tmp);
+	build_col_buffer(y0, img_x, img_y, pixsz, column_buffer, flat + tl_pos);
 	
+	start = getTime();
 	max = find_most_common(y0, pixsz, img_y, column_buffer);
-	
+	end = getTime();
 	tmp = column_buffer + (max * pixsz);
-	
-	fprintf(stderr, "[%s]: most common at %d: #%.02X%.02X%.02X\n", __func__, max, 
-		tmp[0], tmp[1], tmp[2]);
+	fprintf(stderr, "\t[%s]: most common at %d: #%.02X%.02X%.02X (%ld)\n", 
+		__func__, max, tmp[0], tmp[1], tmp[2], (end - start));
 		 
+	start = getTime();
 	*y1p = find_last_mc(tmp, flat + (img_y * img_x) + (x0p), img_x, img_y, y0, pixsz);
-	
-	fprintf(stderr, "[%s]: found y1 = %d\n", __func__, *y1p);
-	
-	free(column_buffer);
+	end = getTime();
+	fprintf(stderr, "\t[%s]: found y1 = %d (%ld)\n", __func__, *y1p, (end - start));
 
 	return 0;
 }
 
-//output (rdi), input (rsi), start (rdx), end (rcx)
-
-int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct img_dt btmright)
+/* attempts to crop an image given reference images to search for, returns 0 on success */
+int crop_window (const char *name, struct img_dt *tl, int num_tls, struct img_dt btmright)
 {
-	struct img_dt img;
-	int retn = -1;
-	
-	if (alloc_img_from_file(name, &img, topleft[0].pixsz))
-		return -1;
-	
-	char wpath[1024];
-	memset(wpath, 0, sizeof(wpath));
-	
-	int tl_pos = 0, br_pos = 0;
+	int tl_pos = 0, i = 0;
 	unsigned int x0, y0, x1, y1;
+	struct img_dt img;
+	unsigned long long start, end;
+	char wp[1024];
 	
-	int i, magic_total;
+	if (alloc_img_from_file(name, &img, tl[0].pixsz))
+		return -1;
 
-	
-	for (i = 0; i < num_tls; i++) {
-	
-		magic_total = MAGIC * (topleft[i].x);// * topleft[i].y;
-		
-		printf("magic = %d\n", magic_total);
-	
-		if ((tl_pos = cmp_img(&img, &topleft[i], magic_total)) <= 0) {
-			fprintf(stderr, "[%s]: did not find ref #%d\n", __func__, i);
-			continue;
-		}
-		
-		retn = 0;	
+	memset(wp, 0, sizeof(wp));
 
-		/*if ((br_pos = cmp_img(&img, &btmright, MAGIC)) > 0) {
+	do {
+		start = getTime();
+		tl_pos = cmp_img(&img, &tl[i], MAGIC * tl[i].x);
+		end = getTime();
+		fprintf(stderr, "[%s]: cmp returned %d for ref #%d (%lld ns)\n", 
+			__func__, tl_pos, i, (end - start));
+	} while (++i < num_tls && tl_pos <= 0);
+	
+	if (tl_pos <= 0) {
+		fprintf(stderr, "[%s]: no matches found\n", __func__);
+		return -1;
+	}/*if ((br_pos = cmp_img(&img, &btmright, MAGIC)) > 0) {
 			y0 = (tl_pos / img.x);
 			x0 = (tl_pos % img.x) / img.pixsz;
 			
@@ -589,35 +593,25 @@ int crop_window (const char *name, struct img_dt *topleft, int num_tls, struct i
 					"(%d, %d) -> (%d, %d)\n", 
 				__func__, tl_pos, br_pos, x0, y0, x1, y1);
 		} else {*/
-			y1 = y0 = (tl_pos / img.x);
-			x0 = (tl_pos % img.x) / img.pixsz;
+		
+	y1 = y0 = (tl_pos / img.x);
+	x0 = (tl_pos % img.x) / img.pixsz;
 
-			detect_br(&x1, &y1, topleft[i].x, img.x, img.y, img.pixsz, tl_pos, img.flat);
-			
-						
-			fprintf(stderr, "[%s]: detected br (%d): "
-					"(%d, %d) -> (%d, %d)\n", 
-				__func__, tl_pos, x0, y0, x1, y1);			
-		//} 
+	start = getTime();
+	detect_br(&x1, &y1, tl[i].x, img.x, img.y, img.pixsz, tl_pos, img.flat);
+	end = getTime();
+	fprintf(stderr, "[%s]: detected br (%d): (%d, %d) -> (%d, %d) (%lld ns)\n", 
+		__func__, tl_pos, x0, y0, x1, y1, (end - start));			
 		
-		snprintf(wpath, sizeof(wpath), "%sc.png", name);
-		retn = crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, 
-					      x0, y0, x1, y1, wpath);
-		
-		if (retn) {
-			fprintf(stderr, "[%s]: success (retn %d): (%s)\n", 
-				__func__, retn, name);
-			retn = 0;
-			break;
-		}
-		
-		fprintf(stderr, "[%s]: could not process %s\n", 
-				__func__, name);
-	}
-	
+	snprintf(wp, sizeof(wp), "%sc.png", name);
+	start = getTime();
+	crop_and_write(img.x / img.pixsz, img.y, img.pixsz, img.flat, x0, y0, x1, y1, wp);
+	end = getTime();
+	fprintf(stderr, "[%s]: wrote %s (%lld ns)\n", __func__, name, (end - start));
+
 	free(img.flat);
 	
-	return retn;
+	return 0;
 }
 
 /* looks for the image "comp" in the .pngs found in "src_path", 
@@ -629,7 +623,6 @@ int run_crop (const char *src_path, char **tl_paths, int num_tl, const char *br_
 	char wpath[1024];
 	DIR *dr;
 	int i;
-	
 	struct img_dt *topleft, btmright;
 	
 	topleft = calloc(sizeof(struct img_dt), num_tl);
@@ -653,41 +646,26 @@ int run_crop (const char *src_path, char **tl_paths, int num_tl, const char *br_
 	}
 	
 	while ((ds = readdir(dr))) {
-		if (*(ds->d_name) != '.') {
-			memset(wpath, 0, sizeof(wpath));
-			snprintf(wpath, sizeof(wpath), "%s/%s", src_path, ds->d_name);
+		if (*(ds->d_name) == '.')
+			continue;
 			
-			if (stat(wpath, &st) >= 0 && 
-			    !S_ISDIR(st.st_mode) && 
-			    !crop_window(wpath, topleft, num_tl, btmright))
-				fprintf(stderr, "found matching file %s\n", ds->d_name);
-		}
+		memset(wpath, 0, sizeof(wpath));
+		snprintf(wpath, sizeof(wpath), "%s/%s", src_path, ds->d_name);
+			
+		if (stat(wpath, &st) >= 0 && !S_ISDIR(st.st_mode) && 
+		    !crop_window(wpath, topleft, num_tl, btmright))
+			fprintf(stderr, "found matching file %s\n", ds->d_name);
 	}
 	
 	closedir(dr);
 	
 	free(btmright.flat);
 	
-	for (i = 0; i < num_tl; i++) {
+	for (i = 0; i < num_tl; i++)
 		free(topleft[i].flat);
-	}
 
 	return 0;
 }
-
-#include <mach/mach.h>
-#include <mach/clock.h>
-long getTime()
-	{
-
-		clock_serv_t clock;
-		mach_timespec_t mts;
-		host_get_clock_service(mach_host_self(), CALENDAR_CLOCK, &clock);
-		clock_get_time(clock, &mts);
-		mach_port_deallocate(mach_task_self(), clock);
-		return mts.tv_nsec;
-
-	}//41398000
 	
 int get_ref_array (char ***array, const char *src_path, const char *ext)
 {
@@ -750,22 +728,15 @@ void free_ref_array (char **refs, int rsize)
 
 int main (int argc, const char **argv)
 {
-	
-	const char *src = "/Users/nobody1/Desktop/dir";
-	const char *ref = "/Users/nobody1/Desktop/ref";
-	const char *br_path = "/Users/nobody1/Desktop/ref2/btmright.png";
 	char **refs;
 	int rsize;
 	
-	if ((rsize = get_ref_array(&refs, ref, ".png")) <= 0)
+	if ((rsize = get_ref_array(&refs, REF_PATH, EXTENSION)) <= 0)
 		return -1;
-	//unsigned long start = getTime();
-	if (run_crop(src, refs, rsize, br_path) < 0)
+
+	if (run_crop(SRC_PATH, refs, rsize, BR_PATH) < 0)
 		fprintf(stderr, "crop error\n");
-	//unsigned long end = getTime();
-	
-	//printf("%lu\n", end - start);
-		
+
 	free_ref_array(refs, rsize);
 
 	return 0;
