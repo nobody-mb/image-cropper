@@ -292,7 +292,8 @@ int soft_cmp_block (unsigned char *cmp_ptr, unsigned char *img_ptr, int magic,
 /* searches for cmp in img, returns position if found, -1 if not */
 int cmp_img (struct img_dt *img, struct img_dt *cmp)
 {
-	int img_len = img->x * img->y;
+	int img_len = img->x * (img->y - cmp->y);
+//	unsigned char *endptr = img->flat + img_len;
 	int xl = img->x - cmp->x;
 	int i, img_xpos = 0, ret = -1;
 	
@@ -300,7 +301,7 @@ int cmp_img (struct img_dt *img, struct img_dt *cmp)
 	unsigned long long start = getTime();
 #endif
 	
-	for (i = 0; i < img_len; i++) {
+	for (i = 0; i < img_len; i += img->pixsz) {
 		int cy = cmp->y;
 #ifdef X86_64_SUPPORTED
 		asm volatile ("cld\n"
@@ -329,7 +330,7 @@ int cmp_img (struct img_dt *img, struct img_dt *cmp)
 			break;
 		}
 
-		if ((img_xpos++) >= xl) {
+		if ((img_xpos += img->pixsz) >= xl) {
 			img_xpos = 0;
 			i += cmp->x;
 		}
@@ -342,65 +343,34 @@ int cmp_img (struct img_dt *img, struct img_dt *cmp)
 	return ret;
 }	
 
-/* find last instance of cmp_ptr[pixsz] in cmp_start */
-int find_last (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x, 
-			int img_y, int y1, int pixsz)
+/* find last instance of cmp[pixsz] in src */
+int find_last (unsigned char *src, unsigned char *cmp, int img_x, int img_y, int y1)
 {
-	int retn;
+	int retn = 0;
 #ifdef TIME_DEBUG
 	unsigned long long start = getTime();
 #endif
 
 #ifdef X86_64_SUPPORTED1
-	retn = 0;
+	asm volatile ("flm_loop:\n"
+			"cmpl %%eax, %%edx\n"
+			"jg flm_exit\n"
+				
+			"subq %%rcx, %%rdi\n"
+			"decl %%eax\n"
 
-	asm volatile ("movq %%rax, %%r8\n"		/* y1 */
-				"movq %%rbx, %%r9\n"		/* pixsz */
-				"movq %%rcx, %%r10\n"		/* img_x */
-				"movq %%rdx, %%r11\n"		/* img_y */
-				"movq %%rdx, %%r12\n"		/* temp */
-				"xorq %%rax, %%rax\n"		/* i */
-			"flm_loop:\n"
-				"cmpq %%r12, %%r8\n"
-				"jg flm_exit\n"
-				"cmpq %%rax, %%r9\n"
-				"je flm_exit\n"
-				"subq %%r10, %%rdi\n"
-				"decq %%r12\n"
-				"subq %%rax, %%rsi\n"
-				"subq %%rax, %%rdi\n"
-				"xorq %%rax, %%rax\n"
-			"flm_subloop:\n"
-				"cmpq %%rax, %%r9\n"
-				"je flm_exit\n"
-				"movb (%%rsi, %%rax), %%bl\n"
-				"movb (%%rdi, %%rax), %%cl\n"
-				"cmpb %%bl, %%cl\n"
-				"jne flm_loop\n"
-				"incq %%rax\n"
-				"jmp flm_subloop\n"
+			"movl (%%rsi), %%ebx\n"
+			"cmpl %%ebx, (%%rdi)\n"
+			"jne flm_loop\n"
 			"flm_exit:\n"
-				"movq %%r12, %%rax\n"
-			: "=a" (retn) : "a" (y1),
-				"b" (pixsz),
-				"c" (img_x),
-				"d" (img_y),
-				"S" (cmp_start),
-				"D" (cmp_ptr)
-			: "r8", "r9", "r10", "r11", "r12");
+			: "=a" (retn) 
+			: "a" (img_y), "c" (img_x), "d" (y1), "S" (src), "D" (cmp));
 #else
-	retn = img_y;
-	
-	int i = 0;
-	
-	while (retn >= y1 && i != pixsz) {
+	for (retn = img_y; --retn >= y1; ) {
 		cmp_ptr -= img_x;
-		--retn;
-
-		for (i = 0; i < pixsz; i++)
-			if (cmp_start[i] != cmp_ptr[i])
-				break;
-	}
+		if (*(uint32_t *)src == *(uint32_t *)cmp)
+			break;
+	} 
 #endif
 
 	retn = (retn <= y1) ? (img_y - 1) : retn;
@@ -413,30 +383,32 @@ int find_last (unsigned char *cmp_start, unsigned char *cmp_ptr, int img_x,
 }
 
 /* copy a column from a flat array into a row */
-void build_col_buffer (int y1, int img_x, int img_y, int pixsz, 
-			unsigned char *column_ptr, unsigned char *cmp_ptr)
+void build_col_buffer (int img_x, int num_y, int pixsz, uint8_t *dst, uint8_t *src)
 {
-#ifdef X86_64_SUPPORTED1
-	asm volatile (  "subq %%rcx, %%rax\n"
-			"subq %%rdx, %%rbx\n"
-		"bcb_loop:\n"
-			"movq %%rdx, %%rcx\n"
-			"cld\n"
-			"rep movsb\n"
-			"addq %%rbx, %%rsi\n"
-			"decq %%rax\n"
-			"jnz bcb_loop\n"
-		:: "c" (y1), "b" (img_x), "a" (img_y), "d" (pixsz), 
-			"D" (column_ptr), "S" (cmp_ptr));
-#else
-	int i; 
-	
-	for (; y1 < img_y; y1++) {
-		for (i = 0; i < pixsz; i++)
-			*column_ptr++ = cmp_ptr[i];
+#ifdef TIME_DEBUG
+	unsigned long long start = getTime();
+#endif
 
-		cmp_ptr += img_x;
-	}
+#ifdef X86_64_SUPPORTED1
+	asm volatile ("bcb_loop:\n"
+			"movl (%%rsi), %%ecx\n"
+			"movl %%ecx, (%%rdi)\n"
+			
+			"addq %%rdx, %%rdi\n"
+			"addq %%rbx, %%rsi\n"
+			
+			"decl %%eax\n"
+			"jnz bcb_loop\n" : : 
+			
+			"b" (img_x), "a" (num_y), "d" (pixsz), 
+			"D" (dst), "S" (src));
+#else
+	for (; num_y--; dst += pixsz, src += img_x) 
+		*(uint32_t *)dst = *(uint32_t *)src;
+#endif
+
+#ifdef TIME_DEBUG
+	fprintf(stderr, "[%s]: (%lld ns)\n", __func__, getTime() - start);
 #endif
 }
 
@@ -549,23 +521,14 @@ int find_most_common (int y1, int pixsz, int img_y, unsigned char *column_buffer
 	
 	for (i = 0; i < img_y; i++) {
 		tmp_pos = 0;
-		num = img_y;
-		
 		cmp_ptr = column_buffer + (num * pixsz);
-		while (--num) {
-			cmp_ptr -= pixsz;
-			for (j = 0; j < pixsz; j++)
-				if (cmp_ptr[j] != cmp_start[j])
-					break;
-			
-			if (j == pixsz)
+		
+		for (num = img_y; --num; cmp_ptr -= pixsz)
+			if (!memcmp(cmp_ptr, cmp_start, pixsz))
 				++tmp_pos;				
-		}
 
-		if (tmp_pos >= max_pos) {
-			max = i;
-			max_pos = tmp_pos;
-		}
+		if (tmp_pos >= max_pos)
+			max = i, max_pos = tmp_pos;
 		
 		cmp_start += pixsz;
 	}
@@ -607,11 +570,11 @@ int crop_window (const char *name, struct img_dt *tl, int num_tls)
 	
 	x1 = find_x_boundary(x0 + top_right, px, img.x, img.flat + tl_pos + top_right);
 
-	build_col_buffer(y0, img.x, img.y, px, cb, img.flat + tl_pos);
+	build_col_buffer(img.x, img.y - y0, px, cb, img.flat + tl_pos);
 	
 	max = px * find_most_common(y0, px, img.y, cb);
 
-	y1 = find_last(cb + max, img.flat + (img.y * img.x) + x0, img.x, img.y, y0, px);
+	y1 = find_last(cb + max, img.flat + (img.y * img.x) + x0, img.x, img.y, y0);
 	
 	snprintf(wp, sizeof(wp), "%sc%s", name, EXTENSION);
 	crop_and_write(img.x / px, img.y, px, img.flat, x0 / px, y0, x1, y1, wp);
